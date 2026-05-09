@@ -319,6 +319,57 @@ button:disabled {
   margin: 2rem 0 1.5rem;
 }
 
+.nav-link {
+  margin: 0 0 1rem;
+  font-size: 0.85rem;
+}
+
+.nav-link a {
+  color: var(--accent-2);
+  text-decoration: none;
+  border-bottom: 1px dashed var(--accent-2);
+  padding-bottom: 1px;
+}
+
+.nav-link a:hover {
+  opacity: 0.85;
+}
+
+.step-pills {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.85rem;
+}
+
+.step-pill {
+  padding: 0.35rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.step-pill.active {
+  background: rgba(0, 242, 234, 0.12);
+  border-color: var(--accent-2);
+  color: var(--accent-2);
+}
+
+.step-pill.done {
+  background: rgba(168, 232, 200, 0.12);
+  border-color: #2a6a4a;
+  color: #a8e8c8;
+}
+
+.step-pill.fail {
+  background: rgba(255, 184, 184, 0.12);
+  border-color: #6a2a32;
+  color: #ffb8b8;
+}
+
 .upload-section { margin-top: 0; }
 
 .section-title {

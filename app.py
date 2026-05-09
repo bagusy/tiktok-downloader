@@ -51,6 +51,11 @@ def index():
     return render_template("index.html")
 
 
+@app.get("/quick")
+def quick_page():
+    return render_template("quick.html")
+
+
 @app.post("/api/info")
 def api_info():
     data = request.get_json(silent=True) or {}
@@ -603,6 +608,147 @@ def api_upload_run():
             yield _sse({"event": "start", "total": len(safe_items)})
             for evt in tt_upload_videos(safe_items, headless=headless):
                 yield _sse(evt)
+        except Exception as e:
+            yield _sse({"event": "fatal", "error": f"Error tak terduga: {e}"})
+
+    return Response(generate(), mimetype="text/event-stream",
+                    headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
+
+
+@app.post("/api/quick/run")
+def api_quick_run():
+    """1-click mode: URL → download kualitas terbaik → upload → hapus file. SSE."""
+    if not UPLOAD_AVAILABLE:
+        return jsonify(error=f"Playwright belum terinstall: {UPLOAD_IMPORT_ERROR}"), 500
+
+    data = request.get_json(silent=True) or {}
+    url = (data.get("url") or "").strip()
+    caption_override = (data.get("caption") or "").strip()
+
+    if not url:
+        return jsonify(error="URL kosong"), 400
+    if detect_url_type(url) == "profile":
+        return jsonify(error="URL profil tidak didukung di Quick Mode — pakai URL video tunggal"), 400
+
+    @stream_with_context
+    def generate():
+        target_path: Path | None = None
+        try:
+            yield _sse({"event": "status", "step": "login", "msg": "Cek login TikTok..."})
+            try:
+                logged_in = tt_check_login()
+            except Exception as e:
+                yield _sse({"event": "fatal", "error": f"Cek login gagal: {e}"})
+                return
+            if not logged_in:
+                yield _sse({
+                    "event": "fatal",
+                    "error": "Belum login TikTok. Buka halaman utama (/) → Import login dari browser dulu.",
+                })
+                return
+
+            yield _sse({"event": "status", "step": "info", "msg": "Mengambil info video..."})
+            try:
+                info = fetch_info(url, cookies_browser=None)
+            except Exception as e:
+                yield _sse({"event": "fatal", "error": f"Gagal ambil info: {e}"})
+                return
+
+            # Caption priority: user override > description (full caption + hashtag) > title
+            original_caption = info.get("description") or info.get("title") or ""
+            caption = caption_override or original_caption
+            yield _sse({
+                "event": "info",
+                "title": info.get("title", "")[:200],
+                "uploader": info.get("uploader", ""),
+                "caption_used": caption[:300],
+                "caption_source": "user" if caption_override else "tiktok-original",
+            })
+
+            yield _sse({"event": "status", "step": "download", "msg": "Download kualitas tertinggi (1080p HD via savetik)..."})
+            try:
+                sav = fetch_savetik_hd(url, timeout=20)
+            except Exception:
+                sav = None
+
+            if sav and sav.get("hd_url"):
+                safe_name = sav.get("filename") or f"quick_{uuid.uuid4().hex[:8]}.mp4"
+                safe_name = safe_name.translate(str.maketrans("", "", '<>:"/\\|?*\n\r\t')).strip().rstrip(".")
+                if not safe_name.lower().endswith(".mp4"):
+                    safe_name += ".mp4"
+                final = _unique_path(DOWNLOAD_DIR / safe_name)
+                if download_savetik_to_file(sav["hd_url"], final, timeout=300):
+                    target_path = final
+                    sz_mb = final.stat().st_size / 1024 / 1024
+                    yield _sse({"event": "status", "step": "download",
+                                "msg": f"Download HD 1080p sukses: {final.name} ({sz_mb:.1f} MB)"})
+
+            if target_path is None:
+                yield _sse({"event": "status", "step": "download", "msg": "HD savetik gagal, fallback ke yt-dlp 720p..."})
+                try:
+                    no_wm, with_wm, audios = categorize_formats(info)
+                    options = build_options(no_wm, with_wm, audios)
+                    target = next((o for o in options if "No-Watermark" in o[2]), None)
+                    if not target:
+                        target = next((o for o in options if o[0] == "video"), None)
+                    if not target:
+                        yield _sse({"event": "fatal", "error": "Tidak ada format video yang bisa di-download."})
+                        return
+                    kind, fmt_id, _label = target
+                    job_dir = DOWNLOAD_DIR / f".tmp-{uuid.uuid4().hex[:8]}"
+                    do_download(url, kind, fmt_id, job_dir, cookies_browser=None)
+                    files = [p for p in job_dir.iterdir() if p.is_file()] if job_dir.exists() else []
+                    if not files:
+                        shutil.rmtree(job_dir, ignore_errors=True)
+                        yield _sse({"event": "fatal", "error": "Download selesai tapi file tidak ditemukan."})
+                        return
+                    src = files[0]
+                    final = _unique_path(DOWNLOAD_DIR / src.name)
+                    src.rename(final)
+                    shutil.rmtree(job_dir, ignore_errors=True)
+                    target_path = final
+                    sz_mb = final.stat().st_size / 1024 / 1024
+                    yield _sse({"event": "status", "step": "download",
+                                "msg": f"Download 720p sukses: {final.name} ({sz_mb:.1f} MB)"})
+                except yt_dlp.utils.DownloadError as e:
+                    yield _sse({"event": "fatal", "error": f"yt-dlp gagal: {e}"})
+                    return
+                except Exception as e:
+                    yield _sse({"event": "fatal", "error": f"Download gagal: {e}"})
+                    return
+
+            yield _sse({"event": "status", "step": "upload", "msg": "Mulai upload ke TikTok..."})
+            uploaded = False
+            for evt in tt_upload_videos([(target_path, caption)], headless=False):
+                # Filter event "progress" untuk satu video — redundant di Quick Mode
+                if evt.get("event") == "progress":
+                    continue
+                if evt.get("event") == "ok":
+                    uploaded = True
+                yield _sse(evt)
+                if evt.get("event") in ("fatal",):
+                    break
+
+            if uploaded:
+                deleted = False
+                try:
+                    target_path.unlink()
+                    deleted = True
+                except Exception as e:
+                    yield _sse({"event": "status", "step": "cleanup",
+                                "msg": f"Gagal hapus file lokal: {e}"})
+                yield _sse({
+                    "event": "complete",
+                    "ok": True,
+                    "deleted": deleted,
+                    "filename": target_path.name,
+                })
+            else:
+                yield _sse({
+                    "event": "complete",
+                    "ok": False,
+                    "file_kept": str(target_path.resolve()) if target_path else None,
+                })
         except Exception as e:
             yield _sse({"event": "fatal", "error": f"Error tak terduga: {e}"})
 

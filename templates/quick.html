@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TikTok Quick — Download + Upload 1 Klik</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="container">
+    <header>
+      <h1>TikTok Quick</h1>
+      <p class="sub">Paste URL, isi caption (opsional), 1 klik — download + upload otomatis.</p>
+      <p class="nav-link">
+        <a href="/">&larr; Mode lengkap (download / bulk / upload manual)</a>
+      </p>
+    </header>
+
+    <div class="upload-status-row">
+      <span>Status login:</span>
+      <span id="loginBadge" class="badge unknown">Mengecek...</span>
+      <a href="/" class="ghost-btn" id="loginLink" style="text-decoration:none; padding:0.4rem 0.85rem; display:none;">Login di sini &rarr;</a>
+    </div>
+
+    <form id="quickForm" class="url-form" style="flex-direction: column; align-items: stretch; gap: 0.75rem;" autocomplete="off">
+      <input
+        type="url"
+        id="quickUrl"
+        name="url"
+        placeholder="URL video TikTok: https://www.tiktok.com/@user/video/..."
+        required
+        spellcheck="false"
+      >
+      <textarea
+        id="quickCaption"
+        class="caption-input"
+        placeholder="Caption + #hashtag (opsional — kosongkan untuk pakai caption asli dari TikTok)"
+        rows="3"
+        style="font-size: 0.9rem;"
+      ></textarea>
+      <button type="submit" id="quickBtn" style="padding: 0.95rem; font-size: 1rem;">
+        Download &amp; Upload Sekarang
+      </button>
+    </form>
+
+    <p class="hint hint-warn" style="margin-top: 0.75rem;">
+      Catatan: file akan disimpan sementara di <code>downloads/</code> lalu otomatis dihapus
+      setelah upload sukses. Window browser akan terbuka selama upload.
+    </p>
+
+    <div id="quickProgress" class="bulk-progress hidden" style="margin-top: 1.5rem;">
+      <div class="step-pills">
+        <span id="stepLogin" class="step-pill">1. Login</span>
+        <span id="stepInfo" class="step-pill">2. Info</span>
+        <span id="stepDownload" class="step-pill">3. Download</span>
+        <span id="stepUpload" class="step-pill">4. Upload</span>
+        <span id="stepCleanup" class="step-pill">5. Cleanup</span>
+      </div>
+      <p class="progress-text" id="quickProgressText">Mempersiapkan...</p>
+      <ul id="quickLog" class="bulk-log"></ul>
+    </div>
+  </main>
+
+  <script src="{{ url_for('static', filename='quick.js') }}"></script>
+</body>
+</html>

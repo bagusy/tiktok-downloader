@@ -411,6 +411,31 @@ def _robust_click(page: Page, locator) -> str:
     raise RuntimeError(f"Semua strategi click gagal: {last_err}")
 
 
+def _dismiss_suggestion_popup(page: Page) -> None:
+    """Tutup popup saran hashtag/mention kalau lagi terbuka.
+
+    TikTok pop-up saran hashtag akan overlay area Post button — bikin click ke Post
+    landing di dropdown, bukan di tombol-nya. Wajib dismiss sebelum click Post.
+    """
+    # Press Escape — cara paling andal untuk close popup di Draft.js editor
+    try:
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(200)
+    except (PWError, PWTimeout):
+        pass
+    # Klik area aman (heading "Details") untuk blur editor + close popup yang masih bandel
+    safe_targets = ['h2:has-text("Details")', 'h1', 'header', 'body']
+    for sel in safe_targets:
+        try:
+            loc = page.locator(sel).first
+            if loc.is_visible(timeout=500):
+                loc.click(force=True, position={"x": 5, "y": 5}, timeout=2000)
+                page.wait_for_timeout(200)
+                return
+        except (PWError, PWTimeout):
+            continue
+
+
 def _fill_caption(page: Page, caption: str) -> None:
     if not caption:
         return
@@ -424,6 +449,8 @@ def _fill_caption(page: Page, caption: str) -> None:
     # Type pelan supaya hashtag/mention dropdown sempat ter-trigger natural
     page.keyboard.type(caption, delay=15)
     page.wait_for_timeout(500)
+    # Tutup popup saran hashtag/mention yang muncul saat ngetik #/@
+    _dismiss_suggestion_popup(page)
 
 
 def _detect_captcha(page: Page) -> bool:
@@ -494,6 +521,10 @@ def _upload_in_page_iter(
         raise RuntimeError("Timeout 10 menit: Post button tidak enabled (upload mungkin gagal).")
 
     url_before_post = page.url
+
+    # Wajib dismiss popup saran hashtag yang mungkin masih kebuka — kalau tidak,
+    # popup akan intercept click ke Post button.
+    _dismiss_suggestion_popup(page)
 
     # Diagnostic: hitung berapa Post button match, ambil yang VISIBLE + enabled
     try:
