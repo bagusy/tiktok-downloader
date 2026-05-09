@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TikTok Downloader</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="container">
+    <header>
+      <h1>TikTok Downloader</h1>
+      <p class="sub">Paste URL video, pilih kualitas, download.</p>
+    </header>
+
+    <form id="urlForm" class="url-form" autocomplete="off">
+      <input
+        type="url"
+        id="url"
+        name="url"
+        placeholder="https://www.tiktok.com/@user/video/..."
+        required
+        spellcheck="false"
+      >
+      <button type="submit" id="getBtn">Get</button>
+    </form>
+
+    <div class="row">
+      <label for="browser">
+        Fallback cookies dari browser
+        <span class="hint">(dipakai otomatis kalau video butuh login)</span>:
+      </label>
+      <select id="browser" name="browser">
+        <option value="">Tidak pakai</option>
+        <option value="chrome">Chrome</option>
+        <option value="edge">Edge</option>
+        <option value="firefox">Firefox</option>
+        <option value="brave">Brave</option>
+        <option value="opera">Opera</option>
+        <option value="vivaldi">Vivaldi</option>
+        <option value="chromium">Chromium</option>
+      </select>
+    </div>
+
+    <div id="status" class="status" role="status" aria-live="polite"></div>
+
+    <section id="info" class="info hidden">
+      <div class="info-head">
+        <img id="thumb" alt="" referrerpolicy="no-referrer">
+        <div class="info-text">
+          <h2 id="title"></h2>
+          <p class="meta">
+            <span id="uploader"></span>
+            <span id="dot" class="dot"></span>
+            <span id="duration"></span>
+          </p>
+        </div>
+      </div>
+
+      <h3>Pilih kualitas:</h3>
+      <ul id="formats" class="formats"></ul>
+    </section>
+  </main>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
