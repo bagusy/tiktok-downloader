@@ -152,17 +152,16 @@ async function downloadFormat(fmt, btn) {
       return;
     }
 
-    const filename = parseFilename(res.headers.get("Content-Disposition")) || "tiktok.mp4";
-    const blob = await res.blob();
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(link.href);
-
-    setStatus("Selesai. File: " + filename + "\nCopy juga tersimpan di folder downloads/", "success");
+    const data = await res.json();
+    if (!data.ok) {
+      setStatus(data.error || "Download gagal", "error");
+      return;
+    }
+    const sizeMB = data.size ? (data.size / 1024 / 1024).toFixed(2) + " MB" : "";
+    setStatus(
+      "Selesai. Tersimpan di:\n" + data.path + (sizeMB ? "\n(" + sizeMB + ")" : ""),
+      "success"
+    );
   } catch (err) {
     setStatus("Network error: " + err.message, "error");
   } finally {
@@ -296,11 +295,3 @@ function addLog(msg, type = "info") {
   bulkLogEl.scrollTop = bulkLogEl.scrollHeight;
 }
 
-function parseFilename(cd) {
-  if (!cd) return null;
-  const ext = cd.match(/filename\*=UTF-8''([^;]+)/i);
-  if (ext) return decodeURIComponent(ext[1].trim());
-  const plain = cd.match(/filename="?([^";]+)"?/i);
-  if (plain) return plain[1].trim();
-  return null;
-}

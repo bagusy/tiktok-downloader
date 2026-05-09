@@ -13,7 +13,7 @@ import uuid
 from pathlib import Path
 
 import yt_dlp
-from flask import Flask, Response, jsonify, render_template, request, send_file, stream_with_context
+from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 
 from tiktok import (
     build_options,
@@ -24,7 +24,6 @@ from tiktok import (
     fetch_info,
     fetch_profile_videos,
     fetch_savetik_hd,
-    stream_savetik_url,
 )
 
 app = Flask(__name__)
@@ -272,9 +271,9 @@ def api_download():
     if not url or not format_id:
         return jsonify(error="URL dan format_id wajib diisi"), 400
 
-    # Format khusus: savetik HD — fetch URL fresh, stream langsung dari snapcdn
+    # Format khusus: savetik HD
     if format_id == "savetik_hd":
-        return _download_via_savetik_hd(url)
+        return _download_savetik_hd_to_disk(url)
 
     job_dir = DOWNLOAD_DIR / f".tmp-{uuid.uuid4().hex[:8]}"
     try:
@@ -296,7 +295,12 @@ def api_download():
     src.rename(final)
     shutil.rmtree(job_dir, ignore_errors=True)
 
-    return send_file(final, as_attachment=True, download_name=final.name)
+    return jsonify(
+        ok=True,
+        filename=final.name,
+        path=str(final.resolve()),
+        size=final.stat().st_size,
+    )
 
 
 def _needs_cookies_retry(err: Exception) -> bool:
@@ -375,39 +379,28 @@ def _download_smart(url, kind, format_id, output_dir, browser):
         raise
 
 
-def _download_via_savetik_hd(video_url: str):
-    """Download HD 1080p via savetik. Save copy ke downloads/, juga stream ke client."""
+def _download_savetik_hd_to_disk(video_url: str):
+    """Download HD 1080p via savetik ke folder downloads/. Return JSON status."""
     sav = fetch_savetik_hd(video_url)
     if not sav or not sav.get("hd_url"):
         return jsonify(error="HD 1080p tidak tersedia untuk video ini (savetik gagal)."), 502
 
-    r, savetik_filename = stream_savetik_url(sav["hd_url"])
-    if not r:
-        return jsonify(error="Gagal stream dari savetik CDN."), 502
-
-    safe_name = savetik_filename or f"tiktok_hd_{uuid.uuid4().hex[:8]}.mp4"
-    safe_name = safe_name.translate(str.maketrans("", "", '<>:"/\\|?*'))
+    safe_name = (sav.get("filename") or f"tiktok_hd_{uuid.uuid4().hex[:8]}.mp4")
+    safe_name = safe_name.translate(str.maketrans("", "", '<>:"/\\|?*\n\r\t')).strip().rstrip(".")
+    if not safe_name:
+        safe_name = f"tiktok_hd_{uuid.uuid4().hex[:8]}.mp4"
     final = _unique_path(DOWNLOAD_DIR / safe_name)
-    content_length = r.headers.get("Content-Length", "")
 
-    def generate():
-        try:
-            with final.open("wb") as f:
-                for chunk in r.iter_content(chunk_size=64 * 1024):
-                    if chunk:
-                        f.write(chunk)
-                        yield chunk
-        finally:
-            r.close()
+    ok = download_savetik_to_file(sav["hd_url"], final, timeout=300)
+    if not ok:
+        return jsonify(error="Gagal download dari savetik CDN."), 502
 
-    headers = {
-        "Content-Type": "video/mp4",
-        "Content-Disposition": f'attachment; filename="{final.name}"',
-    }
-    if content_length:
-        headers["Content-Length"] = content_length
-
-    return Response(stream_with_context(generate()), headers=headers)
+    return jsonify(
+        ok=True,
+        filename=final.name,
+        path=str(final.resolve()),
+        size=final.stat().st_size,
+    )
 
 
 def _unique_path(path: Path) -> Path:

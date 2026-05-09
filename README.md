@@ -44,7 +44,7 @@ cd tiktok-downloader
 3. Paste URL ke form di `http://127.0.0.1:5000`
 4. Klik **Get** → akan muncul thumbnail + judul + pilihan kualitas
 5. Klik tombol **Download** di kualitas yang diinginkan
-6. Browser akan kasih dialog "Save as", file juga ter-copy ke folder `downloads/`
+6. File tersimpan ke folder `downloads/` di project. UI menampilkan path lengkap setelah selesai.
 
 ## Bulk Download (Semua Video dari 1 Akun)
 
