@@ -7,6 +7,7 @@ Open http://127.0.0.1:5000 di browser yang sudah login TikTok.
 """
 
 import json
+import re
 import shutil
 import time
 import uuid
@@ -168,6 +169,17 @@ def api_bulk_download():
                     "url": video_url,
                 })
 
+                # Skip kalau video sudah pernah di-download (file dengan video_id sudah ada)
+                if video_id and _has_video_in_dir(user_dir, video_id):
+                    success += 1
+                    yield _sse({
+                        "event": "ok",
+                        "video_id": video_id,
+                        "title": v.get("title", ""),
+                        "tier": "skip - sudah ada",
+                    })
+                    continue
+
                 outcome = None  # ("ok", title, tier) | ("skip", reason, "") | ("error", reason, "")
                 last_err_msg = ""
 
@@ -271,6 +283,11 @@ def api_download():
     if not url or not format_id:
         return jsonify(error="URL dan format_id wajib diisi"), 400
 
+    # Hapus file lama dari video yang sama (dedup per video_id)
+    vid = _video_id_from_url(url)
+    if vid:
+        _cleanup_existing_video(DOWNLOAD_DIR, vid)
+
     # Format khusus: savetik HD
     if format_id == "savetik_hd":
         return _download_savetik_hd_to_disk(url)
@@ -351,6 +368,34 @@ def _safe_dirname(name: str) -> str:
     bad = '<>:"/\\|?*'
     cleaned = "".join(c for c in name if c not in bad).strip().rstrip(".")
     return cleaned or "unknown"
+
+
+def _video_id_from_url(url: str) -> str:
+    """Ekstrak video_id dari URL TikTok format /video/<id> atau /photo/<id>."""
+    m = re.search(r"/(?:video|photo)/(\d+)", url or "")
+    return m.group(1) if m else ""
+
+
+def _cleanup_existing_video(directory: Path, video_id: str) -> int:
+    """Hapus semua file di directory yang nama-nya mengandung video_id.
+    Return jumlah file yang dihapus."""
+    if not video_id or not directory.exists():
+        return 0
+    count = 0
+    for f in directory.iterdir():
+        if f.is_file() and video_id in f.name:
+            try:
+                f.unlink()
+                count += 1
+            except Exception:
+                pass
+    return count
+
+
+def _has_video_in_dir(directory: Path, video_id: str) -> bool:
+    if not video_id or not directory.exists():
+        return False
+    return any(f.is_file() and video_id in f.name for f in directory.iterdir())
 
 
 def _make_bulk_filename(uploader: str, title: str, video_id: str) -> str:
