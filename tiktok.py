@@ -8,9 +8,17 @@ Usage:
 """
 
 import argparse
+import base64
+import json
+import re
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
+
+try:
+    import requests
+except ImportError:
+    requests = None  # opsional — hanya dibutuhkan untuk fitur HD via savetik
 
 try:
     import yt_dlp
@@ -76,6 +84,118 @@ def fetch_info(url, cookies_browser=None):
     opts["skip_download"] = True
     with yt_dlp.YoutubeDL(opts) as ydl:
         return ydl.extract_info(url, download=False)
+
+
+SAVETIK_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
+)
+
+
+def _decode_snapcdn_jwt(jwt: str):
+    """Decode JWT payload (no verify) untuk dapat inner URL & filename. None kalau gagal."""
+    parts = jwt.split(".")
+    if len(parts) < 2:
+        return None
+    payload = parts[1] + "=" * (-len(parts[1]) % 4)
+    try:
+        return json.loads(base64.urlsafe_b64decode(payload).decode("utf-8"))
+    except Exception:
+        return None
+
+
+def fetch_savetik_hd(video_url: str, timeout: int = 20):
+    """Ambil URL 1080p HD lewat savetik.co. Return dict dengan url HD & regular,
+    atau None kalau service unavailable / tidak ketemu URL HD.
+
+    Format return:
+      {
+        "hd_url": str | None,        # snapcdn redirect URL (validasi server-side)
+        "hd_size": int | None,       # bytes
+        "regular_url": str | None,
+        "regular_size": int | None,
+        "filename": str | None,      # filename suggestion dari savetik
+      }
+    """
+    if requests is None:
+        return None
+    try:
+        s = requests.Session()
+        s.headers["User-Agent"] = SAVETIK_UA
+        r = s.post(
+            "https://savetik.co/api/ajaxSearch",
+            data={"q": video_url, "lang": "en"},
+            headers={
+                "Origin": "https://savetik.co",
+                "Referer": "https://savetik.co/en",
+                "X-Requested-With": "XMLHttpRequest",
+            },
+            timeout=timeout,
+        )
+        if r.status_code != 200:
+            return None
+        data_html = r.json().get("data", "")
+        if not isinstance(data_html, str) or not data_html:
+            return None
+
+        result = {"hd_url": None, "hd_size": None, "regular_url": None,
+                  "regular_size": None, "filename": None}
+
+        for full_url, jwt in re.findall(
+            r'href="(https://dl\.snapcdn\.app/get\?token=([\w\-.]+))"', data_html
+        ):
+            obj = _decode_snapcdn_jwt(jwt)
+            if not obj:
+                continue
+            inner = (obj.get("url") or "").lower()
+            filename = obj.get("filename") or ""
+            # HD = URL berisi "_original.mp4" (TikTok's original-quality endpoint)
+            if "_original.mp4" in inner:
+                result["hd_url"] = full_url
+                result["filename"] = filename
+            elif inner.endswith(".mp4") and ".mp3" not in inner and "_original" not in inner:
+                if not result["regular_url"]:
+                    result["regular_url"] = full_url
+
+        # Probe sizes via HEAD untuk surface info ke UI
+        for kind in ("hd", "regular"):
+            url = result[f"{kind}_url"]
+            if url:
+                try:
+                    h = s.head(url, allow_redirects=True, timeout=10,
+                               headers={"Referer": "https://savetik.co/"})
+                    sz = int(h.headers.get("Content-Length") or 0)
+                    if sz > 0:
+                        result[f"{kind}_size"] = sz
+                except Exception:
+                    pass
+
+        if not result["hd_url"] and not result["regular_url"]:
+            return None
+        return result
+    except Exception:
+        return None
+
+
+def stream_savetik_url(url: str, timeout: int = 60):
+    """Buka stream ke URL savetik (snapcdn). Return tuple (response, filename)
+    atau (None, None) kalau gagal. Caller wajib close response."""
+    if requests is None:
+        return None, None
+    try:
+        s = requests.Session()
+        s.headers["User-Agent"] = SAVETIK_UA
+        r = s.get(url, stream=True, timeout=timeout,
+                  headers={"Referer": "https://savetik.co/"})
+        if r.status_code != 200:
+            r.close()
+            return None, None
+        cd = r.headers.get("Content-Disposition", "")
+        m = re.search(r'filename="?([^";]+)"?', cd)
+        filename = m.group(1) if m else None
+        return r, filename
+    except Exception:
+        return None, None
 
 
 def detect_url_type(url: str) -> str:

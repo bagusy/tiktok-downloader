@@ -22,6 +22,8 @@ from tiktok import (
     download as do_download,
     fetch_info,
     fetch_profile_videos,
+    fetch_savetik_hd,
+    stream_savetik_url,
 )
 
 app = Flask(__name__)
@@ -77,6 +79,22 @@ def api_info():
     no_wm, with_wm, audios = categorize_formats(info)
     options = build_options(no_wm, with_wm, audios)
 
+    # Coba ambil HD 1080p dari savetik.co (best effort, jangan blok kalau gagal)
+    sav = fetch_savetik_hd(url)
+    formats_out = []
+    if sav and sav.get("hd_url"):
+        sz = sav.get("hd_size")
+        size_str = f" · {sz/1024/1024:.1f} MB" if sz else ""
+        formats_out.append({
+            "id": "savetik_hd",
+            "label": f"1080p HD No-Watermark (best){size_str}",
+            "kind": "video",
+        })
+    formats_out.extend([
+        {"id": fid, "label": label, "kind": kind}
+        for kind, fid, label in options
+    ])
+
     return jsonify(
         type="video",
         title=info.get("title") or info.get("id", ""),
@@ -84,10 +102,7 @@ def api_info():
         duration=info.get("duration"),
         thumbnail=info.get("thumbnail"),
         webpage_url=info.get("webpage_url"),
-        formats=[
-            {"id": fid, "label": label, "kind": kind}
-            for kind, fid, label in options
-        ],
+        formats=formats_out,
     )
 
 
@@ -238,6 +253,10 @@ def api_download():
     if not url or not format_id:
         return jsonify(error="URL dan format_id wajib diisi"), 400
 
+    # Format khusus: savetik HD — fetch URL fresh, stream langsung dari snapcdn
+    if format_id == "savetik_hd":
+        return _download_via_savetik_hd(url)
+
     job_dir = DOWNLOAD_DIR / f".tmp-{uuid.uuid4().hex[:8]}"
     try:
         _download_smart(url, kind, format_id, job_dir, browser)
@@ -326,6 +345,41 @@ def _download_smart(url, kind, format_id, output_dir, browser):
             do_download(url, kind, format_id, output_dir, cookies_browser=browser)
             return
         raise
+
+
+def _download_via_savetik_hd(video_url: str):
+    """Download HD 1080p via savetik. Save copy ke downloads/, juga stream ke client."""
+    sav = fetch_savetik_hd(video_url)
+    if not sav or not sav.get("hd_url"):
+        return jsonify(error="HD 1080p tidak tersedia untuk video ini (savetik gagal)."), 502
+
+    r, savetik_filename = stream_savetik_url(sav["hd_url"])
+    if not r:
+        return jsonify(error="Gagal stream dari savetik CDN."), 502
+
+    safe_name = savetik_filename or f"tiktok_hd_{uuid.uuid4().hex[:8]}.mp4"
+    safe_name = safe_name.translate(str.maketrans("", "", '<>:"/\\|?*'))
+    final = _unique_path(DOWNLOAD_DIR / safe_name)
+    content_length = r.headers.get("Content-Length", "")
+
+    def generate():
+        try:
+            with final.open("wb") as f:
+                for chunk in r.iter_content(chunk_size=64 * 1024):
+                    if chunk:
+                        f.write(chunk)
+                        yield chunk
+        finally:
+            r.close()
+
+    headers = {
+        "Content-Type": "video/mp4",
+        "Content-Disposition": f'attachment; filename="{final.name}"',
+    }
+    if content_length:
+        headers["Content-Length"] = content_length
+
+    return Response(stream_with_context(generate()), headers=headers)
 
 
 def _unique_path(path: Path) -> Path:

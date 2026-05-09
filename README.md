@@ -6,11 +6,12 @@ Server Flask berjalan di `http://127.0.0.1:5000`, kamu pakai lewat browser yang 
 
 ## Fitur
 
-- Download video TikTok HD tanpa watermark
+- Download video TikTok **1080p HD tanpa watermark** (~10-20 MB) — sama kualitasnya dengan ssstik.io
+- Download versi 720p HD tanpa watermark (lebih kecil, ~1-3 MB)
 - Download versi original dengan watermark
 - Download audio (M4A; MP3 jika ffmpeg terinstall)
 - **Bulk download semua video dari satu akun** — paste URL profil, klik 1 tombol, semua video ke-download dengan live progress (post foto/slideshow di-skip)
-- Auto-detect kualitas tertinggi yang tersedia
+- Tampilkan ukuran file di tiap pilihan kualitas
 - Otomatis pakai cookies dari browser kalau video butuh login (age-restricted)
 - One-click setup di Windows lewat `run.bat`
 
