@@ -9,6 +9,7 @@ Server Flask berjalan di `http://127.0.0.1:5000`, kamu pakai lewat browser yang 
 - Download video TikTok HD tanpa watermark
 - Download versi original dengan watermark
 - Download audio (M4A; MP3 jika ffmpeg terinstall)
+- **Bulk download semua video dari satu akun** — paste URL profil, klik 1 tombol, semua video ke-download dengan live progress (post foto/slideshow di-skip)
 - Auto-detect kualitas tertinggi yang tersedia
 - Otomatis pakai cookies dari browser kalau video butuh login (age-restricted)
 - One-click setup di Windows lewat `run.bat`
@@ -43,6 +44,20 @@ cd tiktok-downloader
 4. Klik **Get** → akan muncul thumbnail + judul + pilihan kualitas
 5. Klik tombol **Download** di kualitas yang diinginkan
 6. Browser akan kasih dialog "Save as", file juga ter-copy ke folder `downloads/`
+
+## Bulk Download (Semua Video dari 1 Akun)
+
+1. Buka profil TikTok di browser, copy URL profilnya — bentuknya:
+   `https://www.tiktok.com/@username` (tanpa `/video/...` di belakang)
+2. Paste URL itu ke form, klik **Get**
+3. Akan muncul panel: `@username — N video ditemukan`
+4. Klik **Download Semua Video** — progress bar dan log per video akan tampil
+5. File tersimpan ke `downloads/<username>/` — auto-pilih kualitas HD no-watermark untuk tiap video
+
+Catatan:
+- Post foto/slideshow di-skip (sesuai permintaan: hanya video)
+- Ada jeda kecil (~0.5 detik) antar video untuk menghindari rate-limit TikTok
+- Kalau ada video yang butuh login, pilih browser di dropdown "Fallback cookies" sebelum klik Download Semua
 
 ## Untuk Video Age-Restricted
 

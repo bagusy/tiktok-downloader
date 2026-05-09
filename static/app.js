@@ -11,6 +11,15 @@ const dotEl = document.getElementById("dot");
 const formatsEl = document.getElementById("formats");
 const getBtn = document.getElementById("getBtn");
 
+const profileEl = document.getElementById("profile");
+const profileUsernameEl = document.getElementById("profileUsername");
+const profileCountEl = document.getElementById("profileCount");
+const bulkBtn = document.getElementById("bulkBtn");
+const bulkProgressEl = document.getElementById("bulkProgress");
+const progressFillEl = document.getElementById("progressFill");
+const progressTextEl = document.getElementById("progressText");
+const bulkLogEl = document.getElementById("bulkLog");
+
 let currentUrl = "";
 
 function setStatus(msg, type = "info") {
@@ -23,6 +32,15 @@ function clearStatus() {
   statusEl.className = "status";
 }
 
+function hideAll() {
+  infoEl.classList.add("hidden");
+  profileEl.classList.add("hidden");
+  bulkProgressEl.classList.add("hidden");
+  formatsEl.innerHTML = "";
+  bulkLogEl.innerHTML = "";
+  progressFillEl.style.width = "0%";
+}
+
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
   const url = urlInput.value.trim();
@@ -30,9 +48,8 @@ form.addEventListener("submit", async (e) => {
   if (!url) return;
 
   currentUrl = url;
-  infoEl.classList.add("hidden");
-  formatsEl.innerHTML = "";
-  setStatus("Mengambil info video...", "loading");
+  hideAll();
+  setStatus("Mengambil info...", "loading");
   getBtn.disabled = true;
 
   try {
@@ -44,17 +61,21 @@ form.addEventListener("submit", async (e) => {
     const data = await res.json();
 
     if (!res.ok) {
-      let msg = data.error || "Gagal mengambil info video.";
+      let msg = data.error || "Gagal mengambil info.";
       if (data.needs_login) {
         msg +=
-          "\n\nVideo ini butuh login. Pilih browser yang sudah login TikTok pada dropdown 'Cookies dari browser', lalu coba lagi.";
+          "\n\nButuh login. Pilih browser yang sudah login TikTok pada dropdown 'Fallback cookies dari browser', lalu coba lagi.";
       }
       setStatus(msg, "error");
       return;
     }
 
     clearStatus();
-    showInfo(data);
+    if (data.type === "profile") {
+      showProfile(data);
+    } else {
+      showVideo(data);
+    }
   } catch (err) {
     setStatus("Network error: " + err.message, "error");
   } finally {
@@ -62,7 +83,7 @@ form.addEventListener("submit", async (e) => {
   }
 });
 
-function showInfo(data) {
+function showVideo(data) {
   titleEl.textContent = data.title || "(no title)";
   uploaderEl.textContent = data.uploader ? "@" + data.uploader : "";
   if (data.duration) {
@@ -97,8 +118,14 @@ function showInfo(data) {
   infoEl.classList.remove("hidden");
 }
 
+function showProfile(data) {
+  profileUsernameEl.textContent = data.username || "(unknown)";
+  profileCountEl.textContent = data.video_count || 0;
+  profileEl.classList.remove("hidden");
+}
+
 async function downloadFormat(fmt, btn) {
-  setStatus("Mengunduh " + fmt.label + "... (proses di server, tunggu sebentar)", "loading");
+  setStatus("Mengunduh " + fmt.label + "... (tunggu sebentar)", "loading");
   btn.disabled = true;
   btn.classList.add("downloading");
   btn.textContent = "Downloading...";
@@ -145,9 +172,125 @@ async function downloadFormat(fmt, btn) {
   }
 }
 
+bulkBtn.addEventListener("click", async () => {
+  bulkBtn.disabled = true;
+  bulkBtn.textContent = "Sedang mendownload...";
+  bulkProgressEl.classList.remove("hidden");
+  bulkLogEl.innerHTML = "";
+  progressFillEl.style.width = "0%";
+  progressTextEl.textContent = "Memulai...";
+  clearStatus();
+
+  let total = 0;
+  let current = 0;
+  let success = 0;
+  let failed = 0;
+
+  try {
+    const res = await fetch("/api/bulk-download", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url: currentUrl,
+        browser: browserSelect.value || null,
+      }),
+    });
+
+    if (!res.ok || !res.body) {
+      let msg = "Gagal memulai bulk download";
+      try {
+        const data = await res.json();
+        msg = data.error || msg;
+      } catch (_) {}
+      setStatus(msg, "error");
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split("\n\n");
+      buffer = events.pop();
+      for (const evt of events) {
+        if (!evt.startsWith("data: ")) continue;
+        const data = JSON.parse(evt.slice(6));
+
+        switch (data.event) {
+          case "status":
+            progressTextEl.textContent = data.msg;
+            addLog(data.msg, "info");
+            break;
+          case "start":
+            total = data.total;
+            current = 0;
+            progressTextEl.textContent =
+              data.total + " video ditemukan dari @" + data.username + ". Mulai download ke " + data.save_dir;
+            addLog(`Mulai: ${data.total} video → ${data.save_dir}`, "info");
+            break;
+          case "progress":
+            current = data.current;
+            updateProgress(current, total, `[${current}/${total}] ${data.video_id}...`);
+            break;
+          case "ok":
+            success++;
+            addLog(`OK [${data.video_id}] ${(data.title || "").slice(0, 80)}`, "ok");
+            break;
+          case "skip":
+            failed++;
+            addLog(`SKIP [${data.video_id}] ${data.reason}`, "skip");
+            break;
+          case "error":
+            failed++;
+            addLog(`ERROR [${data.video_id}] ${data.reason}`, "error");
+            break;
+          case "done":
+            updateProgress(total, total, `Selesai: ${data.success} sukses, ${data.failed} gagal`);
+            setStatus(
+              `Bulk selesai. ${data.success} berhasil, ${data.failed} gagal.\nSemua file di: ${data.save_dir}`,
+              "success"
+            );
+            break;
+          case "fatal":
+            let msg = "Fatal: " + data.error;
+            if (data.needs_login) {
+              msg += "\n\nButuh login. Pilih browser pada dropdown lalu coba lagi.";
+            }
+            setStatus(msg, "error");
+            addLog("FATAL: " + data.error, "error");
+            break;
+        }
+      }
+    }
+  } catch (err) {
+    setStatus("Network error: " + err.message, "error");
+  } finally {
+    bulkBtn.disabled = false;
+    bulkBtn.textContent = "Download Semua Video";
+  }
+});
+
+function updateProgress(current, total, text) {
+  if (total > 0) {
+    progressFillEl.style.width = ((current / total) * 100).toFixed(1) + "%";
+  }
+  progressTextEl.textContent = text;
+}
+
+function addLog(msg, type = "info") {
+  const li = document.createElement("li");
+  li.className = type;
+  li.textContent = msg;
+  bulkLogEl.appendChild(li);
+  bulkLogEl.scrollTop = bulkLogEl.scrollHeight;
+}
+
 function parseFilename(cd) {
   if (!cd) return null;
-  // Try filename*=UTF-8''... first (RFC 5987), then plain filename=
   const ext = cd.match(/filename\*=UTF-8''([^;]+)/i);
   if (ext) return decodeURIComponent(ext[1].trim());
   const plain = cd.match(/filename="?([^";]+)"?/i);

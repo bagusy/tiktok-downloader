@@ -18,7 +18,7 @@
         type="url"
         id="url"
         name="url"
-        placeholder="https://www.tiktok.com/@user/video/..."
+        placeholder="URL video atau profil: https://www.tiktok.com/@user[/video/...]"
         required
         spellcheck="false"
       >
@@ -59,6 +59,27 @@
 
       <h3>Pilih kualitas:</h3>
       <ul id="formats" class="formats"></ul>
+    </section>
+
+    <section id="profile" class="info hidden">
+      <div class="profile-head">
+        <h2>@<span id="profileUsername"></span></h2>
+        <p class="meta">
+          <span id="profileCount">0</span> video ditemukan
+          <span class="hint">(post foto/slideshow di-skip)</span>
+        </p>
+      </div>
+
+      <button id="bulkBtn" class="bulk-btn">Download Semua Video</button>
+      <p class="hint" id="bulkHint">
+        Akan disimpan ke <code>downloads/&lt;username&gt;/</code> di komputer kamu.
+      </p>
+
+      <div id="bulkProgress" class="bulk-progress hidden">
+        <div class="progress-bar"><div id="progressFill" class="progress-fill"></div></div>
+        <p class="progress-text" id="progressText">Mempersiapkan...</p>
+        <ul id="bulkLog" class="bulk-log"></ul>
+      </div>
     </section>
   </main>
 

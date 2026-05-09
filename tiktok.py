@@ -10,6 +10,7 @@ Usage:
 import argparse
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 try:
     import yt_dlp
@@ -46,6 +47,78 @@ def fetch_info(url, cookies_browser=None):
     opts["skip_download"] = True
     with yt_dlp.YoutubeDL(opts) as ydl:
         return ydl.extract_info(url, download=False)
+
+
+def detect_url_type(url: str) -> str:
+    """Return 'video', 'profile', atau 'unknown' berdasarkan struktur URL TikTok."""
+    try:
+        p = urlparse((url or "").strip())
+    except Exception:
+        return "unknown"
+    host = (p.netloc or "").lower()
+    path = p.path or ""
+    if "tiktok.com" not in host:
+        return "unknown"
+    if "/video/" in path:
+        return "video"
+    if "/photo/" in path:
+        return "video"  # diperlakukan sebagai post tunggal (yt-dlp handle)
+    # /@username atau /@username/ → profil
+    if path.startswith("/@") and path.rstrip("/").count("/") == 1:
+        return "profile"
+    # vt.tiktok.com short links → video
+    if host.startswith("vt.") or host.startswith("vm."):
+        return "video"
+    return "unknown"
+
+
+def fetch_profile_videos(url, cookies_browser=None, max_count=None):
+    """Ambil daftar video dari URL profil TikTok.
+
+    Return dict: {username, video_count, videos: [{id, url, title}, ...]}
+    Skip post foto/slideshow (URL berisi /photo/).
+    """
+    opts = _base_opts(cookies_browser)
+    opts["extract_flat"] = "in_playlist"
+    if max_count:
+        opts["playlistend"] = max_count
+
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+
+    entries = info.get("entries") or []
+    videos = []
+    for e in entries:
+        if not e:
+            continue
+        webpage = e.get("webpage_url") or e.get("url") or ""
+        if "/photo/" in webpage:
+            continue
+        if "/video/" not in webpage:
+            continue
+        videos.append({
+            "id": e.get("id") or "",
+            "url": webpage,
+            "title": e.get("title") or "",
+        })
+
+    username = (info.get("uploader") or info.get("uploader_id") or info.get("channel") or "")
+    if username.startswith("@"):
+        username = username[1:]
+    if not username:
+        # Fallback: ambil dari path URL (/@username)
+        try:
+            path = (urlparse(url).path or "").strip("/")
+            if path.startswith("@"):
+                username = path[1:].split("/")[0]
+        except Exception:
+            pass
+
+    return {
+        "username": username,
+        "video_count": len(videos),
+        "videos": videos,
+    }
 
 
 def categorize_formats(info):
