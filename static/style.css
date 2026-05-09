@@ -235,7 +235,23 @@ button:disabled {
 #bulkHint {
   color: var(--muted);
   font-size: 0.85rem;
-  margin: 0 0 1rem;
+  margin: 0 0 0.5rem;
+}
+
+.hint-warn {
+  color: #d4c08a !important;
+  background: rgba(212, 192, 138, 0.08);
+  border-left: 3px solid #d4c08a;
+  padding: 0.6rem 0.75rem !important;
+  border-radius: 4px;
+  margin: 0 0 1rem !important;
+  font-size: 0.82rem !important;
+  line-height: 1.5;
+}
+
+.hint-warn em {
+  font-style: normal;
+  font-weight: 600;
 }
 
 #bulkHint code {

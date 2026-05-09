@@ -107,15 +107,16 @@ def api_bulk_download():
     def generate():
         try:
             yield _sse({"event": "status", "msg": "Mengambil daftar video dari profil..."})
-            try:
+            # Strategi: kalau user pilih browser, langsung pakai cookies dari awal —
+            # cookies (bahkan dari browser anonim) bantu pass anti-bot TikTok lebih reliable.
+            # Kalau tidak pilih browser, coba tanpa cookies — beresiko anti-bot reject sebagian video.
+            if browser:
+                cookies_to_use = browser
+                yield _sse({"event": "status", "msg": f"Menggunakan cookies dari {browser}..."})
+                profile = fetch_profile_videos(profile_url, cookies_browser=browser)
+            else:
                 profile = fetch_profile_videos(profile_url, cookies_browser=None)
                 cookies_to_use = None
-            except yt_dlp.utils.DownloadError as e:
-                if browser and _needs_cookies_retry(e):
-                    profile = fetch_profile_videos(profile_url, cookies_browser=browser)
-                    cookies_to_use = browser
-                else:
-                    raise
 
             videos = profile["videos"]
             username = profile["username"] or "unknown"
