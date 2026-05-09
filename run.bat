@@ -76,14 +76,14 @@ echo       Python terinstall: !PYTHON_EXE!
 echo.
 
 REM ========== [2/3] Cek dan install dependencies ==========
-echo [2/3] Memeriksa dependencies (Flask, yt-dlp)...
+echo [2/3] Memeriksa dependencies (Flask, yt-dlp, playwright)...
 
-"!PYTHON_EXE!" -c "import yt_dlp, flask" >nul 2>&1
+"!PYTHON_EXE!" -c "import yt_dlp, flask, playwright" >nul 2>&1
 if errorlevel 1 (
     echo       Belum lengkap. Menginstall dari requirements.txt...
     echo       (yt-dlp dipakai versi nightly supaya extractor TikTok up-to-date^)
     "!PYTHON_EXE!" -m pip install --upgrade pip
-    "!PYTHON_EXE!" -m pip install --upgrade --pre "yt-dlp[default]" Flask
+    "!PYTHON_EXE!" -m pip install --upgrade --pre "yt-dlp[default]" Flask playwright
     if errorlevel 1 (
         echo.
         echo [ERROR] Gagal install dependencies.
@@ -93,6 +93,17 @@ if errorlevel 1 (
     echo       Dependencies terinstall.
 ) else (
     echo       Sudah terinstall.
+)
+
+REM Pastikan browser Chromium untuk Playwright sudah ke-download
+REM (perintah install ini idempotent: skip cepat kalau Chromium sudah ada)
+echo       Memeriksa / install browser Chromium untuk Playwright...
+"!PYTHON_EXE!" -m playwright install chromium
+if errorlevel 1 (
+    echo.
+    echo [WARNING] Gagal install Chromium. Fitur upload TikTok belum bisa dipakai.
+    echo Manual install: python -m playwright install chromium
+    echo Lanjut tanpa fitur upload...
 )
 
 echo.

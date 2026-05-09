@@ -88,6 +88,76 @@
         <ul id="bulkLog" class="bulk-log"></ul>
       </div>
     </section>
+
+    <hr class="divider">
+
+    <section id="upload" class="upload-section">
+      <h2 class="section-title">Upload ke TikTok</h2>
+      <p class="sub">Pilih video dari folder <code>downloads/</code>, isi caption, lalu upload otomatis.</p>
+
+      <div class="upload-status-row">
+        <span>Status login:</span>
+        <span id="loginStatusBadge" class="badge unknown">Mengecek...</span>
+        <button id="recheckLoginBtn" class="ghost-btn">Refresh</button>
+      </div>
+
+      <div class="login-methods">
+        <div class="login-method">
+          <label>
+            <strong>Cara 1 (Recommended):</strong> import cookies dari browser yang sudah login TikTok
+          </label>
+          <div class="login-method-row">
+            <select id="loginBrowserSelect">
+              <option value="chrome">Chrome</option>
+              <option value="edge">Edge</option>
+              <option value="firefox">Firefox</option>
+              <option value="brave">Brave</option>
+              <option value="opera">Opera</option>
+              <option value="vivaldi">Vivaldi</option>
+              <option value="chromium">Chromium</option>
+            </select>
+            <button id="importLoginBtn" class="ghost-btn">Import login dari browser</button>
+          </div>
+          <p class="hint">
+            Pastikan kamu sudah login TikTok di browser tersebut. Untuk Chrome/Edge:
+            <strong>tutup browser</strong> dulu (cookie file sering ke-lock).
+            <strong>Firefox paling reliable</strong> — Chrome 127+ pakai enkripsi baru yang sering gagal di-decrypt.
+          </p>
+        </div>
+        <div class="login-method">
+          <label>
+            <strong>Cara 2:</strong> login manual di window Playwright (login Google sering ditolak)
+          </label>
+          <div class="login-method-row">
+            <button id="loginBtn" class="ghost-btn">Login manual via Playwright</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="upload-controls">
+        <button id="refreshVideosBtn" class="ghost-btn">Refresh daftar video</button>
+        <label class="checkbox-row">
+          <input type="checkbox" id="headlessChk">
+          <span>Headless (tanpa window browser) — eksperimental</span>
+        </label>
+      </div>
+
+      <div id="videoList" class="video-list">
+        <p class="hint" id="videoListEmpty">Klik "Refresh daftar video" untuk memuat.</p>
+      </div>
+
+      <button id="uploadBtn" class="bulk-btn" disabled>Upload Video Terpilih (0)</button>
+      <p class="hint hint-warn">
+        Catatan: window browser akan terbuka selama upload. Jangan tutup window-nya sampai selesai.
+        Tombol Post akan diklik otomatis. Kalau ada captcha, selesaikan manual di window browser.
+      </p>
+
+      <div id="uploadProgress" class="bulk-progress hidden">
+        <div class="progress-bar"><div id="uploadProgressFill" class="progress-fill"></div></div>
+        <p class="progress-text" id="uploadProgressText">Mempersiapkan...</p>
+        <ul id="uploadLog" class="bulk-log"></ul>
+      </div>
+    </section>
   </main>
 
   <script src="{{ url_for('static', filename='app.js') }}"></script>

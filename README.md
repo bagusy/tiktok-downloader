@@ -1,6 +1,6 @@
-# TikTok Downloader
+# TikTok Downloader + Uploader
 
-Aplikasi web lokal untuk download video TikTok tanpa watermark, dengan kualitas terbaik yang TikTok berikan. Mirip ssstik.io tapi jalan **di komputer kamu sendiri** — tidak ada server tengah, tidak ada iklan.
+Aplikasi web lokal untuk **download** video TikTok tanpa watermark dan **upload** balik ke akun TikTok kamu, full otomatis di komputer sendiri — tidak ada server tengah, tidak ada iklan.
 
 Server Flask berjalan di `http://127.0.0.1:5000`, kamu pakai lewat browser yang sudah login TikTok.
 
@@ -11,6 +11,7 @@ Server Flask berjalan di `http://127.0.0.1:5000`, kamu pakai lewat browser yang 
 - Download versi original dengan watermark
 - Download audio (M4A; MP3 jika ffmpeg terinstall)
 - **Bulk download semua video dari satu akun** — paste URL profil, klik 1 tombol, semua video ke-download dengan live progress (post foto/slideshow di-skip)
+- **Upload otomatis ke TikTok** — pilih video dari folder `downloads/`, isi caption, klik tombol; Playwright buka browser, upload, dan klik Post otomatis. Bisa multi-pilih untuk batch upload.
 - Tampilkan ukuran file di tiap pilihan kualitas
 - Otomatis pakai cookies dari browser kalau video butuh login (age-restricted)
 - One-click setup di Windows lewat `run.bat`
@@ -60,6 +61,50 @@ Catatan:
 - Ada jeda kecil (~0.5 detik) antar video untuk menghindari rate-limit TikTok
 - Kalau ada video yang butuh login, pilih browser di dropdown "Fallback cookies" sebelum klik Download Semua
 
+## Upload Otomatis ke TikTok
+
+Fitur ini upload video dari folder `downloads/` ke akun TikTok kamu, full otomatis sampai klik tombol Post.
+
+### Setup Pertama Kali
+
+1. Pastikan **Playwright + Chromium** sudah terinstall — `run.bat` melakukannya otomatis. Manual:
+   ```powershell
+   pip install playwright
+   python -m playwright install chromium
+   ```
+2. **Login TikTok di Firefox** (atau Brave) terlebih dulu di komputer kamu — buka tiktok.com, login pakai akun yang mau dipakai upload.
+3. Di UI, scroll ke section **Upload ke TikTok**.
+4. Pilih browser di dropdown (rekomendasi: **Firefox**), klik **Import login dari browser**.
+5. Cookies TikTok akan di-extract dari browser kamu dan di-inject ke profile Playwright. Badge berubah jadi "Logged in" hijau.
+
+Sesi login disimpan di folder `playwright-profile/` di project. Cukup import **sekali**; selanjutnya bisa langsung upload.
+
+#### Kenapa Firefox?
+
+Chrome 127+ (Sept 2024) pakai App-Bound Encryption yang ngunci cookie file ke binary Chrome itu sendiri. Tools eksternal (termasuk yt-dlp dan browser_cookie3) sering gagal decrypt → error "Failed to decrypt with DPAPI".
+
+Solusi paling reliable: login TikTok di **Firefox** dan import dari sana. Cookies Firefox tidak terenkripsi seperti Chrome modern.
+
+Alternatif lain (kalau Firefox tidak ada):
+- **Brave** — Chromium-based, biasanya masih bisa di-decrypt
+- **Login manual via Playwright** — tombol "Login manual via Playwright" di UI buka window Chromium kosong; login langsung di sana (catatan: login Google sering ditolak Google, jadi pakai email/password atau nomor HP)
+
+### Upload Video
+
+1. Klik **Refresh daftar video** untuk load semua video di `downloads/` (rekursif, termasuk subfolder per-uploader).
+2. Centang video yang mau di-upload (bisa multi-pilih).
+3. Isi **caption + hashtag** di kotak masing-masing (opsional — boleh kosong).
+4. Klik **Upload Video Terpilih (N)**.
+5. Window browser akan terbuka per-batch, video di-upload satu per satu, caption otomatis terisi, dan tombol Post diklik otomatis. Live log per langkah tampil di UI.
+
+### Catatan & Troubleshooting Upload
+
+- **Window browser harus tetap kebuka** selama upload. Jangan tutup window-nya.
+- **Captcha** kadang muncul (pertama kali atau saat TikTok curiga otomasi). Selesaikan manual di window browser; otomasi akan tetap lanjut setelah captcha lewat.
+- **Rate limit TikTok**: kalau upload banyak sekaligus, TikTok bisa reject sementara. Default ada jeda 4 detik antar video. Untuk upload >10 video, lebih aman dipisah jadi beberapa batch.
+- **Selector berubah**: TikTok kadang ubah struktur halaman upload. Kalau upload mendadak gagal di langkah "Tunggu Post button", check `tiktok_upload.py` — kemungkinan butuh update selector di `_locate_caption_editor` / `_locate_post_button`.
+- **Reset login**: hapus folder `playwright-profile/` kalau mau ganti akun atau ada masalah.
+
 ## Untuk Video Age-Restricted
 
 Beberapa video TikTok butuh login untuk diakses (yang biasanya muncul tulisan *"This post may not be comfortable for some audiences"*). Untuk video seperti ini:
@@ -81,9 +126,12 @@ Kalau kamu lebih suka kontrol manual atau di OS lain:
 python --version
 
 # 2. Install dependencies (pakai --pre supaya yt-dlp dapat extractor TikTok terbaru)
-pip install --upgrade --pre "yt-dlp[default]" Flask
+pip install --upgrade --pre "yt-dlp[default]" Flask playwright
 
-# 3. Jalankan
+# 3. (Opsional, hanya kalau mau pakai fitur upload) install browser Chromium
+python -m playwright install chromium
+
+# 4. Jalankan
 python app.py
 ```
 
@@ -115,6 +163,7 @@ python tiktok.py "<url>" --cookies-browser chrome
 - **Python 3.10+** — runtime
 - **Flask** — web server lokal
 - **yt-dlp** — extractor TikTok (versi nightly/pre supaya up-to-date dengan perubahan TikTok)
+- **Playwright** — otomasi browser untuk fitur upload (Chromium headed, persistent profile)
 - **HTML + CSS + vanilla JS** — frontend (no build step)
 
 ## Troubleshooting
@@ -133,15 +182,17 @@ python tiktok.py "<url>" --cookies-browser chrome
 ```
 tiktok-downloader/
 ├── run.bat              # one-click installer + launcher (Windows)
-├── app.py               # Flask backend
-├── tiktok.py            # CLI + helper functions (di-share dengan app.py)
+├── app.py               # Flask backend (download + upload endpoints)
+├── tiktok.py            # CLI + helper download (di-share dengan app.py)
+├── tiktok_upload.py     # Playwright otomasi untuk fitur upload
 ├── requirements.txt     # daftar dependency
 ├── templates/
 │   └── index.html       # UI
 ├── static/
 │   ├── style.css
 │   └── app.js
-└── downloads/           # auto-dibuat saat pertama download
+├── downloads/           # auto-dibuat saat pertama download
+└── playwright-profile/  # auto-dibuat saat pertama login TikTok (jangan commit)
 ```
 
 ## Disclaimer

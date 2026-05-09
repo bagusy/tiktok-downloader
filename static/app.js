@@ -295,3 +295,286 @@ function addLog(msg, type = "info") {
   bulkLogEl.scrollTop = bulkLogEl.scrollHeight;
 }
 
+// ============================================================
+//   Upload ke TikTok
+// ============================================================
+
+const loginStatusBadge = document.getElementById("loginStatusBadge");
+const loginBtn = document.getElementById("loginBtn");
+const recheckLoginBtn = document.getElementById("recheckLoginBtn");
+const importLoginBtn = document.getElementById("importLoginBtn");
+const loginBrowserSelect = document.getElementById("loginBrowserSelect");
+const refreshVideosBtn = document.getElementById("refreshVideosBtn");
+const headlessChk = document.getElementById("headlessChk");
+const videoListEl = document.getElementById("videoList");
+const videoListEmpty = document.getElementById("videoListEmpty");
+const uploadBtn = document.getElementById("uploadBtn");
+const uploadProgressEl = document.getElementById("uploadProgress");
+const uploadProgressFill = document.getElementById("uploadProgressFill");
+const uploadProgressText = document.getElementById("uploadProgressText");
+const uploadLogEl = document.getElementById("uploadLog");
+
+const localVideos = []; // {path, rel, name, size, mtime, caption, selected}
+
+function setLoginBadge(state, text) {
+  loginStatusBadge.className = "badge " + state;
+  loginStatusBadge.textContent = text;
+}
+
+async function checkLoginStatus() {
+  setLoginBadge("unknown", "Mengecek...");
+  try {
+    const res = await fetch("/api/upload/status");
+    const data = await res.json();
+    if (!data.available) {
+      setLoginBadge("error", "Playwright belum terinstall");
+      return;
+    }
+    if (data.logged_in) {
+      setLoginBadge("ok", "Logged in");
+    } else {
+      setLoginBadge("warn", "Belum login");
+    }
+  } catch (e) {
+    setLoginBadge("error", "Network error");
+  }
+}
+
+importLoginBtn.addEventListener("click", async () => {
+  const browser = loginBrowserSelect.value;
+  importLoginBtn.disabled = true;
+  importLoginBtn.textContent = "Importing...";
+  setLoginBadge("warn", `Import cookies dari ${browser}...`);
+  try {
+    const res = await fetch("/api/upload/login-from-browser", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ browser }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (data.ok) {
+      await checkLoginStatus();
+    } else {
+      let msg = data.error || "unknown";
+      if (/DPAPI|app[- ]bound/i.test(msg)) {
+        msg =
+          "Chrome 127+ pakai enkripsi cookies baru yang tidak bisa dibaca otomatis. " +
+          "Solusi: pakai Firefox (paling reliable) atau Brave dari dropdown ini.";
+      }
+      setLoginBadge("warn", "Import gagal: " + msg.slice(0, 200));
+    }
+  } catch (e) {
+    setLoginBadge("error", "Network error: " + e.message);
+  } finally {
+    importLoginBtn.disabled = false;
+    importLoginBtn.textContent = "Import login dari browser";
+  }
+});
+
+loginBtn.addEventListener("click", async () => {
+  loginBtn.disabled = true;
+  loginBtn.textContent = "Login berjalan (5 menit timeout)...";
+  setLoginBadge("warn", "Login berjalan — login di window browser yang terbuka");
+  try {
+    const res = await fetch("/api/upload/login", { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (data.ok) {
+      await checkLoginStatus();
+    } else {
+      setLoginBadge("warn", "Login gagal: " + (data.error || "unknown").slice(0, 80));
+    }
+  } catch (e) {
+    setLoginBadge("error", "Network error: " + e.message);
+  } finally {
+    loginBtn.disabled = false;
+    loginBtn.textContent = "Login manual via Playwright";
+  }
+});
+
+recheckLoginBtn.addEventListener("click", () => checkLoginStatus());
+
+async function refreshVideos() {
+  refreshVideosBtn.disabled = true;
+  refreshVideosBtn.textContent = "Memuat...";
+  try {
+    const res = await fetch("/api/local-videos");
+    const data = await res.json();
+    localVideos.length = 0;
+    for (const v of data.videos || []) {
+      localVideos.push({ ...v, caption: "", selected: false });
+    }
+    renderVideoList();
+  } catch (e) {
+    videoListEmpty.textContent = "Gagal memuat: " + e.message;
+  } finally {
+    refreshVideosBtn.disabled = false;
+    refreshVideosBtn.textContent = "Refresh daftar video";
+  }
+}
+
+function renderVideoList() {
+  videoListEl.innerHTML = "";
+  if (!localVideos.length) {
+    const p = document.createElement("p");
+    p.className = "hint";
+    p.id = "videoListEmpty";
+    p.textContent = "Tidak ada video di folder downloads/.";
+    videoListEl.appendChild(p);
+    updateUploadBtn();
+    return;
+  }
+  for (const v of localVideos) {
+    const row = document.createElement("div");
+    row.className = "video-row";
+
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = v.selected;
+    cb.addEventListener("change", () => {
+      v.selected = cb.checked;
+      row.classList.toggle("selected", v.selected);
+      captionInput.disabled = !v.selected;
+      updateUploadBtn();
+    });
+
+    const meta = document.createElement("div");
+    meta.className = "video-meta";
+    const name = document.createElement("div");
+    name.className = "video-name";
+    name.textContent = v.rel;
+    const sub = document.createElement("div");
+    sub.className = "video-sub";
+    const sizeMB = (v.size / 1024 / 1024).toFixed(2);
+    sub.textContent = sizeMB + " MB";
+    meta.appendChild(name);
+    meta.appendChild(sub);
+
+    const captionInput = document.createElement("textarea");
+    captionInput.className = "caption-input";
+    captionInput.placeholder = "Caption + #hashtag (opsional)";
+    captionInput.rows = 2;
+    captionInput.value = v.caption;
+    captionInput.disabled = !v.selected;
+    captionInput.addEventListener("input", () => {
+      v.caption = captionInput.value;
+    });
+
+    row.appendChild(cb);
+    row.appendChild(meta);
+    row.appendChild(captionInput);
+    if (v.selected) row.classList.add("selected");
+    videoListEl.appendChild(row);
+  }
+  updateUploadBtn();
+}
+
+function updateUploadBtn() {
+  const n = localVideos.filter((v) => v.selected).length;
+  uploadBtn.textContent = `Upload Video Terpilih (${n})`;
+  uploadBtn.disabled = n === 0;
+}
+
+refreshVideosBtn.addEventListener("click", refreshVideos);
+
+uploadBtn.addEventListener("click", async () => {
+  const items = localVideos
+    .filter((v) => v.selected)
+    .map((v) => ({ path: v.path, caption: v.caption }));
+  if (!items.length) return;
+
+  uploadBtn.disabled = true;
+  uploadBtn.textContent = "Sedang upload...";
+  uploadProgressEl.classList.remove("hidden");
+  uploadLogEl.innerHTML = "";
+  uploadProgressFill.style.width = "0%";
+  uploadProgressText.textContent = "Memulai...";
+
+  let total = items.length;
+  let current = 0;
+
+  function addUploadLog(msg, type = "info") {
+    const li = document.createElement("li");
+    li.className = type;
+    li.textContent = msg;
+    uploadLogEl.appendChild(li);
+    uploadLogEl.scrollTop = uploadLogEl.scrollHeight;
+  }
+
+  function updUpProgress(c, t, text) {
+    if (t > 0) uploadProgressFill.style.width = ((c / t) * 100).toFixed(1) + "%";
+    uploadProgressText.textContent = text;
+  }
+
+  try {
+    const res = await fetch("/api/upload/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items, headless: headlessChk.checked }),
+    });
+    if (!res.ok || !res.body) {
+      let msg = "Gagal start upload";
+      try {
+        const data = await res.json();
+        msg = data.error || msg;
+      } catch (_) {}
+      addUploadLog("ERROR: " + msg, "error");
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split("\n\n");
+      buffer = events.pop();
+      for (const evt of events) {
+        if (!evt.startsWith("data: ")) continue;
+        const data = JSON.parse(evt.slice(6));
+
+        switch (data.event) {
+          case "start":
+            total = data.total;
+            addUploadLog(`Mulai upload ${data.total} video...`, "info");
+            break;
+          case "status":
+            uploadProgressText.textContent = data.msg;
+            addUploadLog(data.msg, "info");
+            break;
+          case "progress":
+            current = data.current;
+            updUpProgress(current - 1, total, `[${current}/${total}] ${data.filename}`);
+            addUploadLog(`[${current}/${total}] Upload: ${data.filename}`, "info");
+            break;
+          case "ok":
+            addUploadLog(`OK [${data.filename}]`, "ok");
+            updUpProgress(current, total, `[${current}/${total}] ${data.filename} OK`);
+            break;
+          case "error":
+            addUploadLog(`ERROR [${data.filename}] ${data.reason}`, "error");
+            break;
+          case "done":
+            updUpProgress(total, total, `Selesai: ${data.success} sukses, ${data.failed} gagal`);
+            addUploadLog(`SELESAI: ${data.success} sukses, ${data.failed} gagal`, "ok");
+            break;
+          case "fatal":
+            addUploadLog(`FATAL: ${data.error}`, "error");
+            break;
+        }
+      }
+    }
+  } catch (e) {
+    addUploadLog("Network error: " + e.message, "error");
+  } finally {
+    updateUploadBtn();
+    // Refresh login status setelah upload
+    checkLoginStatus();
+  }
+});
+
+// Inisialisasi saat page load
+checkLoginStatus();
+refreshVideos();

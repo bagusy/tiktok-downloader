@@ -10,6 +10,12 @@ env/
 # Hasil download (jangan commit video user)
 downloads/
 
+# Playwright persistent profile (cookies, login session — pribadi)
+playwright-profile/
+
+# Screenshot diagnostic dari Playwright (mengandung konten akun TikTok)
+playwright-debug/
+
 # IDE / editor
 .vscode/
 .idea/

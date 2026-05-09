@@ -27,6 +27,20 @@ from tiktok import (
     fetch_savetik_hd,
 )
 
+# Import upload module — Playwright opsional, jangan fail keras kalau belum di-install
+try:
+    from tiktok_upload import (
+        check_login_status as tt_check_login,
+        login_from_browser as tt_login_from_browser,
+        open_login_window as tt_open_login,
+        upload_videos as tt_upload_videos,
+    )
+    UPLOAD_AVAILABLE = True
+    UPLOAD_IMPORT_ERROR = None
+except Exception as _e:
+    UPLOAD_AVAILABLE = False
+    UPLOAD_IMPORT_ERROR = str(_e)
+
 app = Flask(__name__)
 DOWNLOAD_DIR = Path(__file__).parent / "downloads"
 DOWNLOAD_DIR.mkdir(exist_ok=True)
@@ -446,6 +460,154 @@ def _download_savetik_hd_to_disk(video_url: str):
         path=str(final.resolve()),
         size=final.stat().st_size,
     )
+
+
+VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".m4v"}
+
+
+@app.get("/api/local-videos")
+def api_local_videos():
+    """List semua video di folder downloads/ (rekursif)."""
+    items = []
+    if DOWNLOAD_DIR.exists():
+        for p in sorted(DOWNLOAD_DIR.rglob("*")):
+            if not p.is_file():
+                continue
+            if p.suffix.lower() not in VIDEO_EXTS:
+                continue
+            try:
+                rel = str(p.relative_to(DOWNLOAD_DIR)).replace("\\", "/")
+                items.append({
+                    "path": str(p.resolve()),
+                    "rel": rel,
+                    "name": p.name,
+                    "size": p.stat().st_size,
+                    "mtime": int(p.stat().st_mtime),
+                })
+            except Exception:
+                continue
+    # Urutkan berdasarkan mtime descending (paling baru di atas)
+    items.sort(key=lambda x: x["mtime"], reverse=True)
+    return jsonify(videos=items, count=len(items))
+
+
+@app.get("/api/upload/status")
+def api_upload_status():
+    """Cek apakah Playwright tersedia + apakah profile sudah login TikTok."""
+    if not UPLOAD_AVAILABLE:
+        return jsonify(
+            available=False,
+            logged_in=False,
+            error=f"Playwright belum terinstall: {UPLOAD_IMPORT_ERROR}",
+        )
+    try:
+        logged_in = tt_check_login()
+    except Exception as e:
+        return jsonify(available=True, logged_in=False, error=str(e))
+    return jsonify(available=True, logged_in=logged_in)
+
+
+@app.post("/api/upload/login-from-browser")
+def api_upload_login_from_browser():
+    """Import cookies TikTok dari browser user (Chrome/Edge/Firefox/dst) ke Playwright.
+
+    Body: {"browser": "chrome"|"edge"|"firefox"|"brave"|"opera"|"vivaldi"|"chromium"}
+    """
+    if not UPLOAD_AVAILABLE:
+        return jsonify(error=f"Playwright belum terinstall: {UPLOAD_IMPORT_ERROR}"), 500
+
+    data = request.get_json(silent=True) or {}
+    browser = (data.get("browser") or "").strip().lower()
+    valid_browsers = {"chrome", "edge", "firefox", "brave", "opera", "vivaldi", "chromium"}
+    if browser not in valid_browsers:
+        return jsonify(ok=False, error=f"Browser tidak valid. Pilih: {', '.join(sorted(valid_browsers))}"), 400
+
+    statuses: list[str] = []
+
+    def collect(msg: str) -> None:
+        statuses.append(msg)
+
+    try:
+        ok, err = tt_login_from_browser(browser, on_status=collect)
+    except Exception as e:
+        return jsonify(ok=False, error=str(e), log=statuses), 500
+
+    return jsonify(ok=bool(ok), error=err, log=statuses)
+
+
+@app.post("/api/upload/login")
+def api_upload_login():
+    """Buka browser untuk user login manual. Block sampai login terdeteksi atau timeout 5 menit."""
+    if not UPLOAD_AVAILABLE:
+        return jsonify(error=f"Playwright belum terinstall: {UPLOAD_IMPORT_ERROR}"), 500
+
+    statuses: list[str] = []
+
+    def collect(msg: str) -> None:
+        statuses.append(msg)
+
+    try:
+        ok = tt_open_login(timeout_s=300, on_status=collect)
+    except Exception as e:
+        return jsonify(ok=False, error=str(e), log=statuses), 500
+
+    return jsonify(
+        ok=bool(ok),
+        log=statuses,
+        error=None if ok else "Login tidak terdeteksi (timeout atau window ditutup).",
+    )
+
+
+@app.post("/api/upload/run")
+def api_upload_run():
+    """Streaming SSE: upload list video ke TikTok dengan caption masing-masing.
+
+    Body: {"items": [{"path": "...", "caption": "..."}, ...], "headless": false}
+    Path harus berada di dalam folder downloads/.
+    """
+    if not UPLOAD_AVAILABLE:
+        return jsonify(error=f"Playwright belum terinstall: {UPLOAD_IMPORT_ERROR}"), 500
+
+    data = request.get_json(silent=True) or {}
+    raw_items = data.get("items") or []
+    headless = bool(data.get("headless", False))
+
+    if not isinstance(raw_items, list) or not raw_items:
+        return jsonify(error="items kosong"), 400
+
+    # Validasi semua path → resolved harus di dalam DOWNLOAD_DIR
+    safe_items: list[tuple[Path, str]] = []
+    download_root = DOWNLOAD_DIR.resolve()
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            return jsonify(error="format item tidak valid"), 400
+        p = (raw.get("path") or "").strip()
+        if not p:
+            return jsonify(error="path kosong di salah satu item"), 400
+        try:
+            resolved = Path(p).resolve()
+        except Exception:
+            return jsonify(error=f"path invalid: {p}"), 400
+        try:
+            resolved.relative_to(download_root)
+        except ValueError:
+            return jsonify(error=f"path di luar folder downloads/: {p}"), 400
+        if not resolved.is_file():
+            return jsonify(error=f"file tidak ditemukan: {p}"), 400
+        caption = (raw.get("caption") or "").strip()
+        safe_items.append((resolved, caption))
+
+    @stream_with_context
+    def generate():
+        try:
+            yield _sse({"event": "start", "total": len(safe_items)})
+            for evt in tt_upload_videos(safe_items, headless=headless):
+                yield _sse(evt)
+        except Exception as e:
+            yield _sse({"event": "fatal", "error": f"Error tak terduga: {e}"})
+
+    return Response(generate(), mimetype="text/event-stream",
+                    headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
 
 
 def _unique_path(path: Path) -> Path:
