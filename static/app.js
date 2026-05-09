@@ -238,7 +238,8 @@ bulkBtn.addEventListener("click", async () => {
             break;
           case "ok":
             success++;
-            addLog(`OK [${data.video_id}] ${(data.title || "").slice(0, 80)}`, "ok");
+            const tier = data.tier ? ` [${data.tier}]` : "";
+            addLog(`OK${tier} [${data.video_id}] ${(data.title || "").slice(0, 80)}`, "ok");
             break;
           case "retry":
             addLog(

@@ -20,6 +20,7 @@ from tiktok import (
     categorize_formats,
     detect_url_type,
     download as do_download,
+    download_savetik_to_file,
     fetch_info,
     fetch_profile_videos,
     fetch_savetik_hd,
@@ -168,48 +169,66 @@ def api_bulk_download():
                     "url": video_url,
                 })
 
-                outcome = None  # ("ok", title) | ("skip", reason) | ("error", reason)
+                outcome = None  # ("ok", title, tier) | ("skip", reason, "") | ("error", reason, "")
                 last_err_msg = ""
-                for attempt in range(1, MAX_ATTEMPTS + 1):
-                    try:
-                        info = fetch_info(video_url, cookies_browser=cookies_to_use)
-                        no_wm, with_wm, audios = categorize_formats(info)
-                        options = build_options(no_wm, with_wm, audios)
 
-                        target = next((o for o in options if "No-Watermark" in o[2]), None)
-                        if not target:
-                            target = next((o for o in options if o[0] == "video"), None)
-                        if not target:
-                            outcome = ("skip", "tidak ada format video")
+                # Step A: coba 1080p HD via savetik (best effort, fast fail kalau service down)
+                title_hint = v.get("title") or ""
+                hd_filename = _make_bulk_filename(username, title_hint, video_id)
+                hd_path = user_dir / hd_filename
+                hd_path = _unique_path(hd_path)
+                hd_ok = False
+                try:
+                    sav = fetch_savetik_hd(video_url, timeout=15)
+                    if sav and sav.get("hd_url"):
+                        hd_ok = download_savetik_to_file(sav["hd_url"], hd_path, timeout=180)
+                except Exception:
+                    hd_ok = False
+
+                if hd_ok:
+                    outcome = ("ok", title_hint, "1080p HD")
+                else:
+                    # Step B: fallback yt-dlp 720p dengan retry
+                    for attempt in range(1, MAX_ATTEMPTS + 1):
+                        try:
+                            info = fetch_info(video_url, cookies_browser=cookies_to_use)
+                            no_wm, with_wm, audios = categorize_formats(info)
+                            options = build_options(no_wm, with_wm, audios)
+
+                            target = next((o for o in options if "No-Watermark" in o[2]), None)
+                            if not target:
+                                target = next((o for o in options if o[0] == "video"), None)
+                            if not target:
+                                outcome = ("skip", "tidak ada format video", "")
+                                break
+
+                            kind, fmt_id, _label = target
+                            do_download(video_url, kind, fmt_id, user_dir, cookies_browser=cookies_to_use)
+                            outcome = ("ok", info.get("title", title_hint), "720p (fallback)")
+                            break
+                        except yt_dlp.utils.DownloadError as e:
+                            last_err_msg = str(e)
+                            if _is_transient(last_err_msg) and attempt < MAX_ATTEMPTS:
+                                backoff = 2 * attempt  # 2s, 4s
+                                yield _sse({
+                                    "event": "retry",
+                                    "video_id": video_id,
+                                    "attempt": attempt,
+                                    "max": MAX_ATTEMPTS,
+                                    "wait": backoff,
+                                })
+                                time.sleep(backoff)
+                                continue
+                            outcome = ("error", last_err_msg[:300], "")
+                            break
+                        except Exception as e:
+                            outcome = ("error", str(e)[:300], "")
                             break
 
-                        kind, fmt_id, _label = target
-                        do_download(video_url, kind, fmt_id, user_dir, cookies_browser=cookies_to_use)
-                        outcome = ("ok", info.get("title", ""))
-                        break
-                    except yt_dlp.utils.DownloadError as e:
-                        last_err_msg = str(e)
-                        if _is_transient(last_err_msg) and attempt < MAX_ATTEMPTS:
-                            backoff = 2 * attempt  # 2s, 4s
-                            yield _sse({
-                                "event": "retry",
-                                "video_id": video_id,
-                                "attempt": attempt,
-                                "max": MAX_ATTEMPTS,
-                                "wait": backoff,
-                            })
-                            time.sleep(backoff)
-                            continue
-                        outcome = ("error", last_err_msg[:300])
-                        break
-                    except Exception as e:
-                        outcome = ("error", str(e)[:300])
-                        break
-
-                kind_, payload = outcome
+                kind_, payload, tier = outcome
                 if kind_ == "ok":
                     success += 1
-                    yield _sse({"event": "ok", "video_id": video_id, "title": payload})
+                    yield _sse({"event": "ok", "video_id": video_id, "title": payload, "tier": tier})
                 elif kind_ == "skip":
                     failed += 1
                     failed_items.append({"id": video_id, "reason": payload})
@@ -328,6 +347,15 @@ def _safe_dirname(name: str) -> str:
     bad = '<>:"/\\|?*'
     cleaned = "".join(c for c in name if c not in bad).strip().rstrip(".")
     return cleaned or "unknown"
+
+
+def _make_bulk_filename(uploader: str, title: str, video_id: str) -> str:
+    """Buat filename konsisten untuk bulk download: '<uploader> - <title> [<id>].mp4'."""
+    bad = '<>:"/\\|?*\n\r\t'
+    def safe(s):
+        return "".join(c for c in str(s) if c not in bad).strip().rstrip(".")
+    title_safe = safe(title)[:80] or "video"
+    return f"{safe(uploader) or 'tiktok'} - {title_safe} [{safe(video_id)}].mp4"
 
 
 def _sse(data: dict) -> str:

@@ -198,6 +198,34 @@ def stream_savetik_url(url: str, timeout: int = 60):
         return None, None
 
 
+def download_savetik_to_file(snapcdn_url: str, output_path: Path,
+                             timeout: int = 180) -> bool:
+    """Download URL snapcdn langsung ke file di disk. Return True kalau sukses."""
+    if requests is None:
+        return False
+    try:
+        s = requests.Session()
+        s.headers["User-Agent"] = SAVETIK_UA
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with s.get(snapcdn_url, stream=True, timeout=timeout,
+                   headers={"Referer": "https://savetik.co/"}) as r:
+            if r.status_code != 200:
+                return False
+            with output_path.open("wb") as f:
+                for chunk in r.iter_content(chunk_size=64 * 1024):
+                    if chunk:
+                        f.write(chunk)
+        return True
+    except Exception:
+        # Bersihkan file parsial kalau ada
+        try:
+            if output_path.exists():
+                output_path.unlink()
+        except Exception:
+            pass
+        return False
+
+
 def detect_url_type(url: str) -> str:
     """Return 'video', 'profile', atau 'unknown' berdasarkan struktur URL TikTok."""
     try:
