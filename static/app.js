@@ -240,6 +240,12 @@ bulkBtn.addEventListener("click", async () => {
             success++;
             addLog(`OK [${data.video_id}] ${(data.title || "").slice(0, 80)}`, "ok");
             break;
+          case "retry":
+            addLog(
+              `RETRY [${data.video_id}] attempt ${data.attempt}/${data.max} (tunggu ${data.wait}s)`,
+              "info"
+            );
+            break;
           case "skip":
             failed++;
             addLog(`SKIP [${data.video_id}] ${data.reason}`, "skip");

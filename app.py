@@ -140,6 +140,7 @@ def api_bulk_download():
             failed = 0
             failed_items = []
 
+            MAX_ATTEMPTS = 3
             for i, v in enumerate(videos, start=1):
                 video_url = v["url"]
                 video_id = v.get("id", "")
@@ -151,32 +152,59 @@ def api_bulk_download():
                     "url": video_url,
                 })
 
-                try:
-                    info = fetch_info(video_url, cookies_browser=cookies_to_use)
-                    no_wm, with_wm, audios = categorize_formats(info)
-                    options = build_options(no_wm, with_wm, audios)
+                outcome = None  # ("ok", title) | ("skip", reason) | ("error", reason)
+                last_err_msg = ""
+                for attempt in range(1, MAX_ATTEMPTS + 1):
+                    try:
+                        info = fetch_info(video_url, cookies_browser=cookies_to_use)
+                        no_wm, with_wm, audios = categorize_formats(info)
+                        options = build_options(no_wm, with_wm, audios)
 
-                    target = next((o for o in options if "No-Watermark" in o[2]), None)
-                    if not target:
-                        target = next((o for o in options if o[0] == "video"), None)
-                    if not target:
-                        failed += 1
-                        failed_items.append({"id": video_id, "reason": "tidak ada format video"})
-                        yield _sse({"event": "skip", "video_id": video_id, "reason": "no format"})
-                        continue
+                        target = next((o for o in options if "No-Watermark" in o[2]), None)
+                        if not target:
+                            target = next((o for o in options if o[0] == "video"), None)
+                        if not target:
+                            outcome = ("skip", "tidak ada format video")
+                            break
 
-                    kind, fmt_id, _label = target
-                    do_download(video_url, kind, fmt_id, user_dir, cookies_browser=cookies_to_use)
+                        kind, fmt_id, _label = target
+                        do_download(video_url, kind, fmt_id, user_dir, cookies_browser=cookies_to_use)
+                        outcome = ("ok", info.get("title", ""))
+                        break
+                    except yt_dlp.utils.DownloadError as e:
+                        last_err_msg = str(e)
+                        if _is_transient(last_err_msg) and attempt < MAX_ATTEMPTS:
+                            backoff = 2 * attempt  # 2s, 4s
+                            yield _sse({
+                                "event": "retry",
+                                "video_id": video_id,
+                                "attempt": attempt,
+                                "max": MAX_ATTEMPTS,
+                                "wait": backoff,
+                            })
+                            time.sleep(backoff)
+                            continue
+                        outcome = ("error", last_err_msg[:300])
+                        break
+                    except Exception as e:
+                        outcome = ("error", str(e)[:300])
+                        break
+
+                kind_, payload = outcome
+                if kind_ == "ok":
                     success += 1
-                    yield _sse({"event": "ok", "video_id": video_id, "title": info.get("title", "")})
-                except Exception as e:
+                    yield _sse({"event": "ok", "video_id": video_id, "title": payload})
+                elif kind_ == "skip":
                     failed += 1
-                    reason = str(e)[:300]
-                    failed_items.append({"id": video_id, "reason": reason})
-                    yield _sse({"event": "error", "video_id": video_id, "reason": reason})
+                    failed_items.append({"id": video_id, "reason": payload})
+                    yield _sse({"event": "skip", "video_id": video_id, "reason": payload})
+                else:
+                    failed += 1
+                    failed_items.append({"id": video_id, "reason": payload})
+                    yield _sse({"event": "error", "video_id": video_id, "reason": payload})
 
-                # Jeda kecil supaya tidak di-rate-limit TikTok
-                time.sleep(0.5)
+                # Jeda antar video supaya tidak di-rate-limit TikTok
+                time.sleep(1.5)
 
             yield _sse({
                 "event": "done",
@@ -236,6 +264,23 @@ def _needs_cookies_retry(err: Exception) -> bool:
     """Apakah error kemungkinan bisa diperbaiki dengan cookies login?"""
     msg = str(err).lower()
     return "log in" in msg or "cookies" in msg or "login" in msg
+
+
+def _is_transient(msg: str) -> bool:
+    """Error yang sering hilang sendiri kalau di-retry (challenge anti-bot, parser glitch, dst)."""
+    m = msg.lower()
+    transient_markers = (
+        "unexpected response",
+        "rehydration",
+        "timed out",
+        "timeout",
+        "temporarily",
+        "503",
+        "429",
+        "connection",
+        "ssl",
+    )
+    return any(t in m for t in transient_markers)
 
 
 def _fetch_info_smart(url: str, browser):

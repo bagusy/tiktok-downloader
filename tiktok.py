@@ -36,7 +36,13 @@ def progress_hook(d):
 
 
 def _base_opts(cookies_browser):
-    opts = {"quiet": True, "no_warnings": True}
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        # Biar yt-dlp internal retry kalau hit anti-bot challenge / network blip.
+        "extractor_retries": 3,
+        "retries": 3,
+    }
     if cookies_browser:
         opts["cookiesfrombrowser"] = (cookies_browser,)
     return opts
