@@ -24,21 +24,44 @@ SCRIPT_DIR = Path(__file__).parent
 DOWNLOAD_DIR = SCRIPT_DIR / "downloads"
 
 
+class _QuietLogger:
+    """Buang semua output internal yt-dlp ke stderr.
+
+    Kita sudah handle error via try/except dan progress via progress_hook,
+    jadi yt-dlp tidak perlu print apa-apa sendiri (kalau tidak, terminal jadi noisy
+    saat bulk download — error untuk video N+1 tampil di antara progress video N).
+    """
+    def debug(self, msg): pass
+    def info(self, msg): pass
+    def warning(self, msg): pass
+    def error(self, msg): pass
+
+
+_LINE_WIDTH = 78  # karakter, untuk wipe residue saat overwrite \r
+
+
 def progress_hook(d):
-    if d["status"] == "downloading":
+    status = d.get("status")
+    if status == "downloading":
         pct = (d.get("_percent_str") or "").strip()
         speed = (d.get("_speed_str") or "").strip()
         eta = (d.get("_eta_str") or "").strip()
-        sys.stdout.write(f"\r[*] Mengunduh... {pct}  {speed}  ETA {eta}     ")
-        sys.stdout.flush()
-    elif d["status"] == "finished":
-        sys.stdout.write("\r[*] Mengunduh... 100%, memproses file...           \n")
+        msg = f"[*] Mengunduh... {pct}  {speed}  ETA {eta}"
+    elif status == "finished":
+        msg = "[*] Mengunduh... 100%, memproses file..."
+    else:
+        return
+    sys.stdout.write(f"\r{msg:<{_LINE_WIDTH}}")
+    if status == "finished":
+        sys.stdout.write("\n")
+    sys.stdout.flush()
 
 
 def _base_opts(cookies_browser):
     opts = {
         "quiet": True,
         "no_warnings": True,
+        "logger": _QuietLogger(),
         # Biar yt-dlp internal retry kalau hit anti-bot challenge / network blip.
         "extractor_retries": 3,
         "retries": 3,
