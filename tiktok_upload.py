@@ -14,6 +14,8 @@ di `_locate_*` bisa di-update tanpa ngubah API publik.
 
 from __future__ import annotations
 
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Callable, Iterable, Iterator
@@ -109,6 +111,163 @@ def check_login_status(timeout_s: int = 20) -> bool:
                 ctx.close()
             except Exception:
                 pass
+
+
+# Map nama browser (yt-dlp keys) → executable name. Diurutkan by reliability untuk
+# extract cookies di Windows: Firefox tidak pakai DPAPI/App-Bound encryption, jadi
+# paling konsisten. Chromium-based 127+ sering gagal di-decrypt. Order ini juga jadi
+# priority untuk auto_login() saat memilih kandidat cookies.
+_BROWSER_PROCESS_MAP: list[tuple[str, str]] = [
+    ("firefox", "firefox.exe"),
+    ("brave", "brave.exe"),
+    ("edge", "msedge.exe"),
+    ("chrome", "chrome.exe"),
+    ("opera", "opera.exe"),
+    ("vivaldi", "vivaldi.exe"),
+    ("chromium", "chromium.exe"),
+]
+
+
+def detect_running_browsers() -> list[str]:
+    """Deteksi browser yang sedang running. Windows-only (pakai `tasklist`).
+
+    Return list nama browser (yt-dlp keys) urut by extract-cookies reliability.
+    Empty list pada platform non-Windows atau bila tasklist gagal — caller
+    bisa fallback ke "coba semua".
+    """
+    if sys.platform != "win32":
+        return []
+    try:
+        kwargs: dict = {"capture_output": True, "text": True, "timeout": 8}
+        if hasattr(subprocess, "CREATE_NO_WINDOW"):
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        result = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], **kwargs)
+    except (subprocess.SubprocessError, OSError):
+        return []
+    if result.returncode != 0:
+        return []
+    haystack = result.stdout.lower()
+    return [name for name, exe in _BROWSER_PROCESS_MAP if exe in haystack]
+
+
+def _extract_tt_cookies(browser_name: str) -> tuple[list[dict], str | None]:
+    """Extract cookies tiktok.com dari browser, return (pw_cookies, error_msg).
+
+    pw_cookies sudah dalam shape `BrowserContext.add_cookies()` Playwright.
+    """
+    try:
+        from yt_dlp.cookies import extract_cookies_from_browser
+    except ImportError:
+        return [], "yt-dlp tidak terinstall"
+
+    try:
+        cj = extract_cookies_from_browser(browser_name)
+    except Exception as e:
+        return [], f"gagal baca cookies: {str(e)[:120]}"
+
+    tt_cookies = [c for c in cj if "tiktok.com" in (c.domain or "")]
+    if not tt_cookies:
+        return [], "tidak ada cookies tiktok.com"
+
+    pw_cookies: list[dict] = []
+    for c in tt_cookies:
+        try:
+            http_only = bool(c.has_nonstandard_attr("HttpOnly")) if hasattr(c, "has_nonstandard_attr") else False
+        except Exception:
+            http_only = False
+        pw_cookies.append({
+            "name": c.name,
+            "value": c.value or "",
+            "domain": c.domain,
+            "path": c.path or "/",
+            "expires": int(c.expires) if c.expires else -1,
+            "secure": bool(c.secure),
+            "httpOnly": http_only,
+            "sameSite": "Lax",
+        })
+    return pw_cookies, None
+
+
+def auto_login(on_status: StatusFn = _noop) -> tuple[bool, str | None, str | None]:
+    """Auto-login pakai cookies dari browser yang sedang running.
+
+    Flow:
+    1. Deteksi browser running (Windows tasklist) — fallback "coba semua" kalau
+       deteksi tidak available.
+    2. Extract cookies tiktok.com dari tiap kandidat. Skip yang gagal/kosong.
+    3. Single Playwright headless session: untuk tiap kandidat → clear cookies →
+       inject → navigate ke upload page → cek bukan /login + upload form muncul.
+       Browser pertama yang sukses verify menang; cookies-nya nempel di profile
+       (persistent context auto-save).
+
+    Return (ok, browser_used, error_msg).
+    """
+    detected = detect_running_browsers()
+    if detected:
+        on_status(f"Browser running terdeteksi: {', '.join(detected)}")
+        candidates = detected
+    else:
+        on_status("Tidak ada browser running terdeteksi. Mencoba semua browser terinstall...")
+        candidates = [name for name, _exe in _BROWSER_PROCESS_MAP]
+
+    extracted: list[tuple[str, list[dict]]] = []
+    for br in candidates:
+        pw_cookies, err = _extract_tt_cookies(br)
+        if pw_cookies:
+            on_status(f"  [{br}] {len(pw_cookies)} cookies TikTok ditemukan")
+            extracted.append((br, pw_cookies))
+        else:
+            on_status(f"  [{br}] {err}")
+
+    if not extracted:
+        return False, None, (
+            "Tidak ada browser yang punya cookies TikTok valid. "
+            "Login dulu di salah satu browser (Firefox paling reliable di Windows)."
+        )
+
+    with sync_playwright() as p:
+        ctx = _launch_context(p, headless=True)
+        try:
+            page = ctx.new_page()
+            for br, pw_cookies in extracted:
+                on_status(f"Memverifikasi cookies dari {br}...")
+                try:
+                    ctx.clear_cookies()
+                except Exception:
+                    pass
+                try:
+                    ctx.add_cookies(pw_cookies)
+                except PWError as e:
+                    on_status(f"  [{br}] gagal inject cookies: {e}")
+                    continue
+                try:
+                    page.goto(UPLOAD_URL, timeout=30_000, wait_until="domcontentloaded")
+                except PWTimeout:
+                    pass
+                try:
+                    page.wait_for_load_state("networkidle", timeout=10_000)
+                except PWTimeout:
+                    pass
+                if _is_login_page(page.url):
+                    on_status(f"  [{br}] cookies tidak valid (TikTok minta login)")
+                    continue
+                try:
+                    page.wait_for_selector('input[type="file"]', timeout=5000, state="attached")
+                except PWTimeout:
+                    on_status(f"  [{br}] upload form tidak muncul")
+                    continue
+                on_status(f"Login sukses pakai cookies dari {br}.")
+                return True, br, None
+        finally:
+            try:
+                ctx.close()
+            except Exception:
+                pass
+
+    return False, None, (
+        "Cookies ke-extract dari browser tapi tidak valid (mungkin expired/logout). "
+        "Login ulang TikTok di browser, lalu refresh."
+    )
 
 
 def login_from_browser(browser_name: str, on_status: StatusFn = _noop) -> tuple[bool, str | None]:

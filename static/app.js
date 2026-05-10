@@ -321,7 +321,7 @@ function setLoginBadge(state, text) {
   loginStatusBadge.textContent = text;
 }
 
-async function checkLoginStatus() {
+async function checkLoginStatus({ autoLoginIfNeeded = false } = {}) {
   setLoginBadge("unknown", "Mengecek...");
   try {
     const res = await fetch("/api/upload/status");
@@ -332,8 +332,26 @@ async function checkLoginStatus() {
     }
     if (data.logged_in) {
       setLoginBadge("ok", "Logged in");
-    } else {
+      return;
+    }
+    if (!autoLoginIfNeeded) {
       setLoginBadge("warn", "Belum login");
+      return;
+    }
+    const detected = data.detected_browsers || [];
+    const hint = detected.length ? detected.join(", ") : "scan...";
+    setLoginBadge("warn", `Auto-login (${hint})...`);
+    try {
+      const auto = await fetch("/api/upload/auto-login", { method: "POST" });
+      const ad = await auto.json().catch(() => ({}));
+      if (ad.ok) {
+        setLoginBadge("ok", `Logged in via ${ad.browser}`);
+      } else {
+        const reason = (ad.error || "tidak diketahui").slice(0, 140);
+        setLoginBadge("warn", "Auto-login gagal: " + reason);
+      }
+    } catch (e) {
+      setLoginBadge("warn", "Auto-login error: " + e.message);
     }
   } catch (e) {
     setLoginBadge("error", "Network error");
@@ -391,7 +409,7 @@ loginBtn.addEventListener("click", async () => {
   }
 });
 
-recheckLoginBtn.addEventListener("click", () => checkLoginStatus());
+recheckLoginBtn.addEventListener("click", () => checkLoginStatus({ autoLoginIfNeeded: true }));
 
 async function refreshVideos() {
   refreshVideosBtn.disabled = true;
@@ -575,6 +593,6 @@ uploadBtn.addEventListener("click", async () => {
   }
 });
 
-// Inisialisasi saat page load
-checkLoginStatus();
+// Inisialisasi saat page load — kalau belum login, auto-coba dari browser yang lagi running
+checkLoginStatus({ autoLoginIfNeeded: true });
 refreshVideos();

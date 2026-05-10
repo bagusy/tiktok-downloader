@@ -30,7 +30,9 @@ from tiktok import (
 # Import upload module — Playwright opsional, jangan fail keras kalau belum di-install
 try:
     from tiktok_upload import (
+        auto_login as tt_auto_login,
         check_login_status as tt_check_login,
+        detect_running_browsers as tt_detect_running_browsers,
         login_from_browser as tt_login_from_browser,
         open_login_window as tt_open_login,
         upload_videos as tt_upload_videos,
@@ -498,18 +500,48 @@ def api_local_videos():
 
 @app.get("/api/upload/status")
 def api_upload_status():
-    """Cek apakah Playwright tersedia + apakah profile sudah login TikTok."""
+    """Cek apakah Playwright tersedia + apakah profile sudah login TikTok.
+
+    Juga return list browser yang sedang running (untuk hint UI auto-login).
+    """
     if not UPLOAD_AVAILABLE:
         return jsonify(
             available=False,
             logged_in=False,
+            detected_browsers=[],
             error=f"Playwright belum terinstall: {UPLOAD_IMPORT_ERROR}",
         )
     try:
         logged_in = tt_check_login()
     except Exception as e:
-        return jsonify(available=True, logged_in=False, error=str(e))
-    return jsonify(available=True, logged_in=logged_in)
+        return jsonify(available=True, logged_in=False, detected_browsers=[], error=str(e))
+    try:
+        detected = tt_detect_running_browsers()
+    except Exception:
+        detected = []
+    return jsonify(available=True, logged_in=logged_in, detected_browsers=detected)
+
+
+@app.post("/api/upload/auto-login")
+def api_upload_auto_login():
+    """Auto-deteksi browser running → extract cookies → inject → verify login.
+
+    Tidak butuh body. Return: {ok, browser, error, log}.
+    """
+    if not UPLOAD_AVAILABLE:
+        return jsonify(error=f"Playwright belum terinstall: {UPLOAD_IMPORT_ERROR}"), 500
+
+    statuses: list[str] = []
+
+    def collect(msg: str) -> None:
+        statuses.append(msg)
+
+    try:
+        ok, browser_used, err = tt_auto_login(on_status=collect)
+    except Exception as e:
+        return jsonify(ok=False, error=str(e), log=statuses), 500
+
+    return jsonify(ok=bool(ok), browser=browser_used, error=err, log=statuses)
 
 
 @app.post("/api/upload/login-from-browser")
@@ -647,11 +679,39 @@ def api_quick_run():
                 })
                 return
 
-            yield _sse({"event": "status", "step": "info", "msg": "Mengambil info video..."})
+            # Untuk video age-restricted / "Log in for access", yt-dlp butuh cookies
+            # juga (terpisah dari Playwright login). Pakai browser running yang sama.
+            running = []
             try:
-                info = fetch_info(url, cookies_browser=None)
-            except Exception as e:
-                yield _sse({"event": "fatal", "error": f"Gagal ambil info: {e}"})
+                running = tt_detect_running_browsers()
+            except Exception:
+                pass
+            cookies_browser = running[0] if running else None
+            cookie_hint = f" (cookies: {cookies_browser})" if cookies_browser else ""
+
+            yield _sse({"event": "status", "step": "info",
+                        "msg": f"Mengambil info video{cookie_hint}..."})
+            info = None
+            last_err: Exception | None = None
+            # Coba dengan cookies dari running browser dulu, fallback tanpa cookies
+            attempts = []
+            if cookies_browser:
+                attempts.append(cookies_browser)
+            attempts.append(None)
+            for attempt_browser in attempts:
+                try:
+                    info = fetch_info(url, cookies_browser=attempt_browser)
+                    cookies_browser = attempt_browser
+                    break
+                except yt_dlp.utils.DownloadError as e:
+                    last_err = e
+                    if not _needs_cookies_retry(e):
+                        break
+                except Exception as e:
+                    last_err = e
+                    break
+            if info is None:
+                yield _sse({"event": "fatal", "error": f"Gagal ambil info: {last_err}"})
                 return
 
             # Caption priority: user override > description (full caption + hashtag) > title
@@ -696,7 +756,7 @@ def api_quick_run():
                         return
                     kind, fmt_id, _label = target
                     job_dir = DOWNLOAD_DIR / f".tmp-{uuid.uuid4().hex[:8]}"
-                    do_download(url, kind, fmt_id, job_dir, cookies_browser=None)
+                    do_download(url, kind, fmt_id, job_dir, cookies_browser=cookies_browser)
                     files = [p for p in job_dir.iterdir() if p.is_file()] if job_dir.exists() else []
                     if not files:
                         shutil.rmtree(job_dir, ignore_errors=True)

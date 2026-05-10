@@ -21,7 +21,7 @@ function setBadge(state, text) {
   loginBadge.textContent = text;
 }
 
-async function checkLogin() {
+async function checkLogin({ autoLoginIfNeeded = false } = {}) {
   setBadge("unknown", "Mengecek...");
   loginLink.style.display = "none";
   try {
@@ -34,8 +34,27 @@ async function checkLogin() {
     }
     if (data.logged_in) {
       setBadge("ok", "Logged in");
-    } else {
+      return;
+    }
+    if (!autoLoginIfNeeded) {
       setBadge("warn", "Belum login");
+      loginLink.style.display = "";
+      return;
+    }
+    const detected = data.detected_browsers || [];
+    const hint = detected.length ? detected.join(", ") : "scan...";
+    setBadge("warn", `Auto-login (${hint})...`);
+    try {
+      const auto = await fetch("/api/upload/auto-login", { method: "POST" });
+      const ad = await auto.json().catch(() => ({}));
+      if (ad.ok) {
+        setBadge("ok", `Logged in via ${ad.browser}`);
+      } else {
+        setBadge("warn", "Auto-login gagal: " + (ad.error || "?").slice(0, 140));
+        loginLink.style.display = "";
+      }
+    } catch (e) {
+      setBadge("warn", "Auto-login error: " + e.message);
       loginLink.style.display = "";
     }
   } catch (e) {
@@ -180,4 +199,5 @@ form.addEventListener("submit", async (e) => {
   }
 });
 
-checkLogin();
+// Page load: auto-coba login dari browser yang lagi running
+checkLogin({ autoLoginIfNeeded: true });
