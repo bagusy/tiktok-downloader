@@ -637,32 +637,68 @@ def _focus_caption_editor(page: Page, editor) -> None:
         pass
 
 
+_DIALOG_CONTAINER_SELECTORS = (
+    'div[role="dialog"]',
+    'div[role="alertdialog"]',
+    'div[class*="TUXModal"]',
+    'div[class*="Modal"]',
+    'div[class*="modal"]',
+    'div[class*="Popup"]',
+    'div[class*="popup"]',
+    'div[class*="Confirm"]',
+    'div[class*="confirm"]',
+    'div[class*="Dialog"]',
+    'div[class*="dialog"]',
+)
+
+_DIALOG_CONFIRM_TEXTS = (
+    "Post anyway", "Post Anyway", "Post now", "Post Now",
+    "Confirm", "Continue", "Yes", "OK", "Got it", "Got It",
+    "Submit", "Agree", "Accept", "Proceed",
+    "Post",  # generic — selalu di akhir karena ambigu
+)
+
+
 def _confirm_post_dialog_if_present(page: Page) -> bool:
-    """Setelah klik Post, TikTok kadang munculkan dialog konfirmasi.
-    Coba cari tombol confirm/post/yes di dalam dialog dan klik.
-    Return True kalau ada dialog yang ke-confirm."""
-    dialog_button_texts = ["Post anyway", "Confirm", "Continue", "Post", "Yes"]
-    for txt in dialog_button_texts:
+    """Cari dialog/modal yang muncul setelah klik Post (mis. konfirmasi
+    copyright, age-restriction, edit-after-post, dll) dan klik tombol confirm-nya.
+
+    Return True kalau ada dialog yang ke-confirm. Best-effort — gagal tidak
+    raise.
+    """
+    # Cek dulu: ada container dialog yang visible?
+    visible_container = None
+    for container_sel in _DIALOG_CONTAINER_SELECTORS:
         try:
-            # Cari button di dalam dialog/modal yang baru muncul
-            loc = page.locator(
-                f'div[role="dialog"] button:has-text("{txt}"), '
-                f'div[class*="modal"] button:has-text("{txt}")'
-            ).first
-            if loc.is_visible(timeout=500):
-                try:
-                    loc.click(timeout=3000)
-                    page.wait_for_timeout(1000)
-                    return True
-                except (PWError, PWTimeout):
+            loc = page.locator(container_sel).first
+            if loc.is_visible(timeout=300):
+                visible_container = container_sel
+                break
+        except (PWError, PWTimeout):
+            continue
+
+    if not visible_container:
+        return False
+
+    # Container ketemu → cari tombol confirm di dalamnya
+    for txt in _DIALOG_CONFIRM_TEXTS:
+        for container_sel in _DIALOG_CONTAINER_SELECTORS:
+            try:
+                btn = page.locator(
+                    f'{container_sel} button:has-text("{txt}")'
+                ).first
+                if not btn.is_visible(timeout=300):
+                    continue
+                # Coba normal click → force click fallback
+                for force in (False, True):
                     try:
-                        loc.click(force=True, timeout=3000)
-                        page.wait_for_timeout(1000)
+                        btn.click(force=force, timeout=3000)
+                        page.wait_for_timeout(1200)
                         return True
                     except (PWError, PWTimeout):
                         continue
-        except (PWError, PWTimeout):
-            continue
+            except (PWError, PWTimeout):
+                continue
     return False
 
 
@@ -885,10 +921,11 @@ def _upload_in_page_iter(
     except (RuntimeError, PWError) as e:
         raise RuntimeError(f"Gagal klik Post: {e}")
 
-    # Setelah klik, kadang muncul dialog konfirmasi ("Are you sure...?" atau "Post anyway")
-    # — coba klik tombol konfirm-nya kalau ada (best effort, jangan blok lama)
+    # Setelah klik, kadang muncul dialog konfirmasi ("Are you sure...?" /
+    # "Post anyway" / copyright check). Tunggu 1.5s lalu coba dismiss dulu.
     page.wait_for_timeout(1500)
-    _confirm_post_dialog_if_present(page)
+    if _confirm_post_dialog_if_present(page):
+        yield {"event": "status", "msg": "Dialog konfirmasi ke-detect & ke-klik."}
 
     yield {"event": "status", "msg": "Menunggu konfirmasi sukses (URL berubah ke /content)..."}
     success = False
@@ -908,6 +945,13 @@ def _upload_in_page_iter(
         err_msg = _read_error_toast(page)
         if err_msg:
             raise RuntimeError(f"TikTok error: {err_msg}")
+        # Poll dialog tiap iterasi — dialog konfirmasi kadang muncul telat (>1.5s
+        # setelah click Post), atau ada multi-step (klik Confirm → dialog kedua).
+        try:
+            if _confirm_post_dialog_if_present(page):
+                yield {"event": "status", "msg": "Dialog konfirmasi (delayed) ke-klik."}
+        except Exception:
+            pass
         page.wait_for_timeout(2500)
 
     if not success:
