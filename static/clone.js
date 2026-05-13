@@ -31,7 +31,8 @@ async function checkLogin({ autoLoginIfNeeded = false } = {}) {
       return;
     }
     if (data.logged_in) {
-      setBadge("ok", "Logged in");
+      const who = data.username ? ` @${data.username}` : "";
+      setBadge("ok", `Logged in${who}`);
       return;
     }
     if (!autoLoginIfNeeded) {
@@ -46,7 +47,8 @@ async function checkLogin({ autoLoginIfNeeded = false } = {}) {
       const auto = await fetch("/api/upload/auto-login", { method: "POST" });
       const ad = await auto.json().catch(() => ({}));
       if (ad.ok) {
-        setBadge("ok", `Logged in via ${ad.browser}`);
+        // Refresh status untuk dapetin username yang baru aja ke-import
+        await checkLogin({ autoLoginIfNeeded: false });
       } else {
         setBadge("warn", "Auto-login gagal: " + (ad.error || "?").slice(0, 140));
         loginLink.style.display = "";
@@ -128,15 +130,18 @@ form.addEventListener("submit", async (e) => {
           case "start":
             cntTotal.textContent = String(data.pending);
             cntSkipped.textContent = String(data.skipped_already || 0);
+            if (data.dest_username) {
+              addLog(`Akun tujuan upload: @${data.dest_username}`, "info");
+            }
             addLog(
-              `@${data.username}: ${data.total} video total, ${data.pending} pending` +
+              `Sumber @${data.username}: ${data.total} video total, ${data.pending} pending` +
                 (data.skipped_already
                   ? `, ${data.skipped_already} di-skip (sudah pernah di-upload)`
                   : ""),
               "info"
             );
             addLog(`Save dir: ${data.save_dir}`, "info");
-            progressText.textContent = `Clone @${data.username} — ${data.pending} video pending`;
+            progressText.textContent = `Clone @${data.username} → @${data.dest_username || "?"} — ${data.pending} pending`;
             break;
           case "progress":
             progressText.textContent = `Video ${data.current}/${data.total} — id ${data.video_id || "?"}`;

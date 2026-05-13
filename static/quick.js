@@ -33,7 +33,8 @@ async function checkLogin({ autoLoginIfNeeded = false } = {}) {
       return;
     }
     if (data.logged_in) {
-      setBadge("ok", "Logged in");
+      const who = data.username ? ` @${data.username}` : "";
+      setBadge("ok", `Logged in${who}`);
       return;
     }
     if (!autoLoginIfNeeded) {
@@ -48,7 +49,7 @@ async function checkLogin({ autoLoginIfNeeded = false } = {}) {
       const auto = await fetch("/api/upload/auto-login", { method: "POST" });
       const ad = await auto.json().catch(() => ({}));
       if (ad.ok) {
-        setBadge("ok", `Logged in via ${ad.browser}`);
+        await checkLogin({ autoLoginIfNeeded: false });
       } else {
         setBadge("warn", "Auto-login gagal: " + (ad.error || "?").slice(0, 140));
         loginLink.style.display = "";

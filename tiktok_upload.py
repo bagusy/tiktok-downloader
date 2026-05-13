@@ -14,6 +14,8 @@ di `_locate_*` bisa di-update tanpa ngubah API publik.
 
 from __future__ import annotations
 
+import configparser
+import os
 import subprocess
 import sys
 import time
@@ -82,11 +84,39 @@ def _is_login_page(url: str) -> bool:
     return "/login" in u or "tiktok.com/signup" in u
 
 
-def check_login_status(timeout_s: int = 20) -> bool:
-    """Cek cepat (headless) apakah profile sudah login.
+def _get_logged_in_username(page: Page) -> str | None:
+    """Cari username TikTok yang sedang login. Best-effort, return None kalau gagal.
+
+    Strategi: navigate ke https://www.tiktok.com/profile — TikTok auto-redirect ke
+    /@<username> kalau logged in. Parse username dari URL final.
+    """
+    import re
+
+    try:
+        page.goto("https://www.tiktok.com/profile", timeout=15_000,
+                  wait_until="domcontentloaded")
+    except (PWError, PWTimeout):
+        pass
+    # Tunggu redirect selesai (network idle), tapi jangan blok lama
+    try:
+        page.wait_for_load_state("networkidle", timeout=6_000)
+    except (PWError, PWTimeout):
+        pass
+
+    try:
+        final_url = page.url
+    except PWError:
+        return None
+
+    m = re.search(r"tiktok\.com/@([^/?#]+)", final_url or "")
+    return m.group(1) if m else None
+
+
+def check_login_status(timeout_s: int = 20) -> tuple[bool, str | None]:
+    """Cek cepat (headless) apakah profile sudah login. Return (logged_in, username).
 
     Navigate ke upload page; kalau tidak di-redirect ke /login dan input[type=file]
-    ada → logged in.
+    ada → logged in. Username di-scrape dari DOM (best-effort, bisa None).
     """
     with sync_playwright() as p:
         ctx = _launch_context(p, headless=True)
@@ -101,12 +131,12 @@ def check_login_status(timeout_s: int = 20) -> bool:
             except PWTimeout:
                 pass
             if _is_login_page(page.url):
-                return False
+                return False, None
             try:
                 page.wait_for_selector('input[type="file"]', timeout=5000, state="attached")
-                return True
             except PWTimeout:
-                return False
+                return False, None
+            return True, _get_logged_in_username(page)
         finally:
             try:
                 ctx.close()
@@ -151,8 +181,83 @@ def detect_running_browsers() -> list[str]:
     return [name for name, exe in _BROWSER_PROCESS_MAP if exe in haystack]
 
 
-def _extract_tt_cookies(browser_name: str) -> tuple[list[dict], str | None]:
+def _firefox_root_dir() -> Path | None:
+    """Path ke direktori Firefox user (APPDATA\\Mozilla\\Firefox)."""
+    if sys.platform != "win32":
+        return None
+    appdata = os.environ.get("APPDATA")
+    if not appdata:
+        return None
+    root = Path(appdata) / "Mozilla" / "Firefox"
+    return root if root.exists() else None
+
+
+def _list_firefox_profiles() -> list[tuple[str, Path]]:
+    """Parse profiles.ini → list (name, abs_path). Empty kalau Firefox tidak terinstall.
+
+    Profile path bisa relatif (IsRelative=1) atau absolut. Default name biasanya
+    'default-release' atau 'default'.
+    """
+    root = _firefox_root_dir()
+    if not root:
+        return []
+    ini = root / "profiles.ini"
+    if not ini.exists():
+        return []
+    cp = configparser.ConfigParser()
+    try:
+        cp.read(ini, encoding="utf-8")
+    except (OSError, configparser.Error):
+        return []
+
+    result: list[tuple[str, Path]] = []
+    for section in cp.sections():
+        if not section.lower().startswith("profile"):
+            continue
+        name = cp.get(section, "Name", fallback="").strip()
+        path_str = cp.get(section, "Path", fallback="").strip()
+        if not path_str:
+            continue
+        is_relative = cp.getint(section, "IsRelative", fallback=1)
+        abs_path = (root / path_str) if is_relative else Path(path_str)
+        if abs_path.exists():
+            result.append((name or abs_path.name, abs_path))
+    return result
+
+
+def _firefox_running_profiles() -> list[tuple[str, Path]]:
+    """Profile Firefox yang sedang dipakai (ada parent.lock di dir-nya).
+
+    Firefox bikin file `parent.lock` di profile dir saat profile dibuka, hapus
+    saat ditutup. Cara paling reliable untuk identify "profile mana yang lagi
+    dipakai user" tanpa parse process args.
+    """
+    return [(name, p) for name, p in _list_firefox_profiles()
+            if (p / "parent.lock").exists()]
+
+
+def _browser_extraction_attempts(browser_name: str) -> list[tuple[str, str | None]]:
+    """Return list (label, profile_arg) untuk extract cookies dari browser ini.
+
+    Untuk Firefox: prioritas profile yang sedang running. Kalau ada running profile,
+    HANYA itu yang dicoba (jangan fallback ke default — user explicitly mau pakai
+    yang sekarang). Kalau tidak ada running profile, fallback ke default.
+
+    Untuk browser lain: pakai default profile (None).
+    """
+    if browser_name == "firefox":
+        running = _firefox_running_profiles()
+        if running:
+            return [(f"firefox:{name}", str(path)) for name, path in running]
+    return [(browser_name, None)]
+
+
+def _extract_tt_cookies(browser_name: str,
+                        profile: str | None = None) -> tuple[list[dict], str | None]:
     """Extract cookies tiktok.com dari browser, return (pw_cookies, error_msg).
+
+    `profile` opsional — untuk multi-profile setup (mis. Firefox), pass profile
+    name atau absolute path. None = pakai default yt-dlp behavior.
 
     pw_cookies sudah dalam shape `BrowserContext.add_cookies()` Playwright.
     """
@@ -162,7 +267,10 @@ def _extract_tt_cookies(browser_name: str) -> tuple[list[dict], str | None]:
         return [], "yt-dlp tidak terinstall"
 
     try:
-        cj = extract_cookies_from_browser(browser_name)
+        if profile:
+            cj = extract_cookies_from_browser(browser_name, profile=profile)
+        else:
+            cj = extract_cookies_from_browser(browser_name)
     except Exception as e:
         return [], f"gagal baca cookies: {str(e)[:120]}"
 
@@ -213,12 +321,18 @@ def auto_login(on_status: StatusFn = _noop) -> tuple[bool, str | None, str | Non
 
     extracted: list[tuple[str, list[dict]]] = []
     for br in candidates:
-        pw_cookies, err = _extract_tt_cookies(br)
-        if pw_cookies:
-            on_status(f"  [{br}] {len(pw_cookies)} cookies TikTok ditemukan")
-            extracted.append((br, pw_cookies))
-        else:
-            on_status(f"  [{br}] {err}")
+        attempts = _browser_extraction_attempts(br)
+        if br == "firefox" and len(attempts) > 1:
+            on_status(f"  [{br}] {len(attempts)} profile sedang running, akan dicoba semua")
+        elif br == "firefox" and attempts[0][1]:
+            on_status(f"  [{br}] running profile: {attempts[0][0]}")
+        for label, profile in attempts:
+            pw_cookies, err = _extract_tt_cookies(br, profile=profile)
+            if pw_cookies:
+                on_status(f"  [{label}] {len(pw_cookies)} cookies TikTok ditemukan")
+                extracted.append((label, pw_cookies))
+            else:
+                on_status(f"  [{label}] {err}")
 
     if not extracted:
         return False, None, (
@@ -280,68 +394,62 @@ def login_from_browser(browser_name: str, on_status: StatusFn = _noop) -> tuple[
     sebaiknya ditutup karena cookie file kadang lock.
     """
     on_status(f"Membaca cookies TikTok dari {browser_name}...")
-    try:
-        from yt_dlp.cookies import extract_cookies_from_browser
-    except ImportError:
-        return False, "yt-dlp tidak terinstall (dibutuhkan untuk extract cookies)."
 
-    try:
-        cj = extract_cookies_from_browser(browser_name)
-    except Exception as e:
-        return False, f"Gagal baca cookies dari {browser_name}: {e}"
+    attempts = _browser_extraction_attempts(browser_name)
+    if browser_name == "firefox" and attempts[0][1]:
+        labels = ", ".join(label for label, _ in attempts)
+        on_status(f"Firefox running profile terdeteksi: {labels}")
 
-    tt_cookies = [c for c in cj if "tiktok.com" in (c.domain or "")]
-    if not tt_cookies:
+    extracted: list[tuple[str, list[dict]]] = []
+    last_err: str | None = None
+    for label, profile in attempts:
+        pw_cookies, err = _extract_tt_cookies(browser_name, profile=profile)
+        if pw_cookies:
+            on_status(f"  [{label}] {len(pw_cookies)} cookies ditemukan")
+            extracted.append((label, pw_cookies))
+        else:
+            last_err = err
+            on_status(f"  [{label}] {err}")
+
+    if not extracted:
         return False, (
-            f"Tidak ada cookies tiktok.com di {browser_name}. "
+            f"Tidak ada cookies tiktok.com di {browser_name} ({last_err or '?'}). "
             "Pastikan kamu sudah login TikTok di browser tersebut, lalu coba lagi."
         )
-
-    on_status(f"Ditemukan {len(tt_cookies)} cookies. Inject ke profile Playwright...")
-
-    pw_cookies = []
-    for c in tt_cookies:
-        try:
-            http_only = bool(c.has_nonstandard_attr("HttpOnly")) if hasattr(c, "has_nonstandard_attr") else False
-        except Exception:
-            http_only = False
-        pw_cookies.append({
-            "name": c.name,
-            "value": c.value or "",
-            "domain": c.domain,
-            "path": c.path or "/",
-            "expires": int(c.expires) if c.expires else -1,
-            "secure": bool(c.secure),
-            "httpOnly": http_only,
-            "sameSite": "Lax",
-        })
 
     with sync_playwright() as p:
         ctx = _launch_context(p, headless=True)
         try:
-            try:
-                ctx.add_cookies(pw_cookies)
-            except PWError as e:
-                return False, f"Gagal inject cookies ke Playwright: {e}"
-
-            on_status("Memverifikasi login dengan navigate ke TikTok Studio...")
             page = ctx.new_page()
-            try:
-                page.goto(UPLOAD_URL, timeout=30_000, wait_until="domcontentloaded")
-            except PWTimeout:
-                pass
-            try:
-                page.wait_for_load_state("networkidle", timeout=10_000)
-            except PWTimeout:
-                pass
+            for label, pw_cookies in extracted:
+                on_status(f"Memverifikasi cookies dari {label}...")
+                try:
+                    ctx.clear_cookies()
+                except Exception:
+                    pass
+                try:
+                    ctx.add_cookies(pw_cookies)
+                except PWError as e:
+                    on_status(f"  [{label}] gagal inject cookies: {e}")
+                    continue
+                try:
+                    page.goto(UPLOAD_URL, timeout=30_000, wait_until="domcontentloaded")
+                except PWTimeout:
+                    pass
+                try:
+                    page.wait_for_load_state("networkidle", timeout=10_000)
+                except PWTimeout:
+                    pass
+                if _is_login_page(page.url):
+                    on_status(f"  [{label}] cookies tidak valid (TikTok minta login)")
+                    continue
+                on_status(f"Login berhasil di-import dari {label}.")
+                return True, None
 
-            if _is_login_page(page.url):
-                return False, (
-                    "Cookies ke-import tapi TikTok masih minta login. "
-                    "Coba login ulang di browser tersebut, lalu retry."
-                )
-            on_status("Login berhasil di-import.")
-            return True, None
+            return False, (
+                "Cookies ke-import tapi TikTok masih minta login di semua profile yang dicoba. "
+                "Coba login ulang di browser tersebut, lalu retry."
+            )
         finally:
             try:
                 ctx.close()

@@ -520,14 +520,16 @@ def api_upload_status():
             error=f"Playwright belum terinstall: {UPLOAD_IMPORT_ERROR}",
         )
     try:
-        logged_in = tt_check_login()
+        logged_in, username = tt_check_login()
     except Exception as e:
-        return jsonify(available=True, logged_in=False, detected_browsers=[], error=str(e))
+        return jsonify(available=True, logged_in=False, username=None,
+                       detected_browsers=[], error=str(e))
     try:
         detected = tt_detect_running_browsers()
     except Exception:
         detected = []
-    return jsonify(available=True, logged_in=logged_in, detected_browsers=detected)
+    return jsonify(available=True, logged_in=logged_in, username=username,
+                   detected_browsers=detected)
 
 
 @app.post("/api/upload/auto-login")
@@ -676,7 +678,7 @@ def api_quick_run():
         try:
             yield _sse({"event": "status", "step": "login", "msg": "Cek login TikTok..."})
             try:
-                logged_in = tt_check_login()
+                logged_in, _username = tt_check_login()
             except Exception as e:
                 yield _sse({"event": "fatal", "error": f"Cek login gagal: {e}"})
                 return
@@ -941,7 +943,7 @@ def api_clone_run():
             # Step 0: cek login Playwright (target akun upload-an user)
             yield _sse({"event": "status", "msg": "Cek login TikTok (akun upload tujuan)..."})
             try:
-                logged_in = tt_check_login()
+                logged_in, dest_username = tt_check_login()
             except Exception as e:
                 yield _sse({"event": "fatal", "error": f"Cek login gagal: {e}"})
                 return
@@ -992,6 +994,7 @@ def api_clone_run():
             yield _sse({
                 "event": "start",
                 "username": username,
+                "dest_username": dest_username,
                 "total": total,
                 "pending": len(pending),
                 "skipped_already": skipped_already,
