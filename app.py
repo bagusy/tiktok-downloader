@@ -1000,18 +1000,43 @@ def api_clone_run():
                     cookies_browser = None
             cookie_hint = f" (cookies: {cookies_browser})" if cookies_browser else ""
 
-            # Step 2: ambil daftar video dari profile
+            # Step 2: ambil daftar video dari profile. Untuk 429 (rate limit),
+            # backoff 30s/60s lalu retry — yt-dlp internal retries tidak cukup lama
+            # untuk window TikTok yang biasanya 1-2 menit.
             yield _sse({"event": "status",
                         "msg": f"Mengambil daftar video dari profil{cookie_hint}..."})
-            try:
-                profile = fetch_profile_videos(profile_url, cookies_browser=cookies_browser,
-                                               max_count=max_count)
-            except yt_dlp.utils.DownloadError as e:
-                yield _sse({"event": "fatal", "error": f"Gagal ambil profile: {e}",
-                            "needs_login": _needs_cookies_retry(e)})
-                return
-            except Exception as e:
-                yield _sse({"event": "fatal", "error": f"Error tak terduga: {e}"})
+            profile = None
+            last_err: Exception | None = None
+            for attempt in range(1, 4):
+                try:
+                    profile = fetch_profile_videos(profile_url, cookies_browser=cookies_browser,
+                                                   max_count=max_count)
+                    break
+                except yt_dlp.utils.DownloadError as e:
+                    last_err = e
+                    msg = str(e).lower()
+                    is_rate_limit = "429" in msg or "too many requests" in msg
+                    if is_rate_limit and attempt < 3:
+                        wait_s = 30 * attempt
+                        yield _sse({"event": "status",
+                                    "msg": f"Rate limited (429). Tunggu {wait_s}s lalu "
+                                           f"retry ({attempt + 1}/3)..."})
+                        time.sleep(wait_s)
+                        continue
+                    break
+                except Exception as e:
+                    last_err = e
+                    break
+
+            if profile is None:
+                err_msg = str(last_err) if last_err else "unknown"
+                hint = ""
+                if "429" in err_msg.lower() or "too many" in err_msg.lower():
+                    hint = (" — TikTok rate-limit. Coba tunggu 5-10 menit, atau pakai "
+                            "cookies dari browser yang sudah login (form di atas).")
+                yield _sse({"event": "fatal",
+                            "error": f"Gagal ambil profile: {err_msg}{hint}",
+                            "needs_login": _needs_cookies_retry(last_err) if last_err else False})
                 return
 
             videos = profile["videos"]
