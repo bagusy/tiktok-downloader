@@ -1077,10 +1077,9 @@ def api_clone_run():
                                         "phase": "download", "reason": str(e)[:300]})
                             continue
 
-                        # 4b: caption = title dari listing bulk profile (di TikTok
-                        # title == caption). Hindari fetch_info per-video supaya
-                        # tidak nambah 1 HTTP request lagi per video.
-                        caption = title_hint
+                        # 4b: caption = title dari listing bulk + " #fyp" sebagai
+                        # default tag. Kalau title kosong, caption jadi cuma "#fyp".
+                        caption = (title_hint.strip() + " #fyp").strip()
 
                         # 4c: upload via session yang sama
                         upload_ok = False
