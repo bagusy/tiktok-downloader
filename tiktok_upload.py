@@ -1036,10 +1036,14 @@ def upload_session(headless: bool = False):
         ctx = _launch_context(p, headless=headless)
         try:
             page = ctx.new_page()
-            # Sanity warm-up: navigate ke home dulu supaya cookies / token state stabil.
+            # Sanity warm-up: navigate ke home supaya cookies / token state stabil.
+            # Best-effort — TikTok kadang return ERR_HTTP_RESPONSE_CODE_FAILURE atau
+            # captcha redirect untuk home page, tapi upload page tetap accessible.
+            # Jadi swallow semua error di sini; biar upload-nya sendiri yang report
+            # error kalau memang ada issue real.
             try:
                 page.goto(HOME_URL, timeout=30_000, wait_until="domcontentloaded")
-            except PWTimeout:
+            except (PWTimeout, PWError):
                 pass
             yield _UploadSession(page)
         finally:
