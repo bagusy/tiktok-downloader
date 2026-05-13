@@ -1077,14 +1077,10 @@ def api_clone_run():
                                         "phase": "download", "reason": str(e)[:300]})
                             continue
 
-                        # 4b: ambil caption asli (description full). Kalau gagal, pakai title.
+                        # 4b: caption = title dari listing bulk profile (di TikTok
+                        # title == caption). Hindari fetch_info per-video supaya
+                        # tidak nambah 1 HTTP request lagi per video.
                         caption = title_hint
-                        try:
-                            info = fetch_info(video_url, cookies_browser=cookies_browser)
-                            caption = (info.get("description") or info.get("title")
-                                       or title_hint or "")
-                        except Exception:
-                            pass
 
                         # 4c: upload via session yang sama
                         upload_ok = False
