@@ -8,6 +8,8 @@ const progressText = document.getElementById("cloneProgressText");
 const logEl = document.getElementById("cloneLog");
 const loginBadge = document.getElementById("loginBadge");
 const loginLink = document.getElementById("loginLink");
+const profilePickerRow = document.getElementById("profilePickerRow");
+const profilePicker = document.getElementById("profilePicker");
 
 const cntUploaded = document.getElementById("cntUploaded");
 const cntFailed = document.getElementById("cntFailed");
@@ -19,7 +21,7 @@ function setBadge(state, text) {
   loginBadge.textContent = text;
 }
 
-async function checkLogin({ autoLoginIfNeeded = false } = {}) {
+async function checkLogin({ autoLoginIfNeeded = false, firefoxProfile = null } = {}) {
   setBadge("unknown", "Mengecek...");
   loginLink.style.display = "none";
   try {
@@ -30,24 +32,30 @@ async function checkLogin({ autoLoginIfNeeded = false } = {}) {
       loginLink.style.display = "";
       return;
     }
-    if (data.logged_in) {
+    if (data.logged_in && !firefoxProfile) {
       const who = data.username ? ` @${data.username}` : "";
       setBadge("ok", `Logged in${who}`);
       return;
     }
-    if (!autoLoginIfNeeded) {
+    if (!autoLoginIfNeeded && !firefoxProfile) {
       setBadge("warn", "Belum login");
       loginLink.style.display = "";
       return;
     }
     const detected = data.detected_browsers || [];
-    const hint = detected.length ? detected.join(", ") : "scan...";
-    setBadge("warn", `Auto-login (${hint})...`);
+    const hint = firefoxProfile
+      ? "switching firefox profile..."
+      : `Auto-login (${detected.length ? detected.join(", ") : "scan..."})...`;
+    setBadge("warn", hint);
     try {
-      const auto = await fetch("/api/upload/auto-login", { method: "POST" });
+      const body = firefoxProfile ? { firefox_profile: firefoxProfile } : {};
+      const auto = await fetch("/api/upload/auto-login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
       const ad = await auto.json().catch(() => ({}));
       if (ad.ok) {
-        // Refresh status untuk dapetin username yang baru aja ke-import
         await checkLogin({ autoLoginIfNeeded: false });
       } else {
         setBadge("warn", "Auto-login gagal: " + (ad.error || "?").slice(0, 140));
@@ -61,6 +69,37 @@ async function checkLogin({ autoLoginIfNeeded = false } = {}) {
     setBadge("error", "Network error");
   }
 }
+
+async function loadFirefoxProfiles() {
+  try {
+    const res = await fetch("/api/upload/firefox-profiles");
+    const data = await res.json();
+    const profiles = (data.profiles || []).filter((p) => p.running);
+    if (profiles.length < 2) {
+      profilePickerRow.classList.add("hidden");
+      return;
+    }
+    profilePicker.innerHTML = "";
+    profiles.forEach((p, idx) => {
+      const opt = document.createElement("option");
+      opt.value = p.path;
+      const when = p.last_active
+        ? new Date(p.last_active * 1000).toLocaleTimeString()
+        : "?";
+      opt.textContent = `${p.name} — last active ${when}` + (idx === 0 ? " (default)" : "");
+      profilePicker.appendChild(opt);
+    });
+    profilePickerRow.classList.remove("hidden");
+  } catch (_) {
+    profilePickerRow.classList.add("hidden");
+  }
+}
+
+profilePicker.addEventListener("change", async () => {
+  const chosen = profilePicker.value;
+  if (!chosen) return;
+  await checkLogin({ autoLoginIfNeeded: true, firefoxProfile: chosen });
+});
 
 function addLog(msg, type = "info") {
   const li = document.createElement("li");
@@ -189,5 +228,6 @@ form.addEventListener("submit", async (e) => {
   }
 });
 
-// Page load: auto-login dari browser yang lagi running
+// Page load: auto-login dari browser yang lagi running + populate profile picker
 checkLogin({ autoLoginIfNeeded: true });
+loadFirefoxProfiles();

@@ -536,10 +536,15 @@ def api_upload_status():
 def api_upload_auto_login():
     """Auto-deteksi browser running → extract cookies → inject → verify login.
 
-    Tidak butuh body. Return: {ok, browser, error, log}.
+    Body opsional: {"firefox_profile": "<abs path>"} untuk override pilihan
+    Firefox profile (kalau user buka >1 profile bareng).
+    Return: {ok, browser, error, log}.
     """
     if not UPLOAD_AVAILABLE:
         return jsonify(error=f"Playwright belum terinstall: {UPLOAD_IMPORT_ERROR}"), 500
+
+    data = request.get_json(silent=True) or {}
+    firefox_profile = (data.get("firefox_profile") or "").strip() or None
 
     statuses: list[str] = []
 
@@ -547,11 +552,42 @@ def api_upload_auto_login():
         statuses.append(msg)
 
     try:
-        ok, browser_used, err = tt_auto_login(on_status=collect)
+        ok, browser_used, err = tt_auto_login(on_status=collect, firefox_profile=firefox_profile)
     except Exception as e:
         return jsonify(ok=False, error=str(e), log=statuses), 500
 
     return jsonify(ok=bool(ok), browser=browser_used, error=err, log=statuses)
+
+
+@app.get("/api/upload/firefox-profiles")
+def api_firefox_profiles():
+    """List semua Firefox profile + status running + activity mtime untuk dropdown UI."""
+    if not UPLOAD_AVAILABLE:
+        return jsonify(profiles=[], error=f"Playwright belum terinstall: {UPLOAD_IMPORT_ERROR}")
+
+    from tiktok_upload import (
+        _list_firefox_profiles,
+        _firefox_running_profiles,
+        _firefox_profile_activity_mtime,
+    )
+
+    try:
+        all_profiles = _list_firefox_profiles()
+    except Exception as e:
+        return jsonify(profiles=[], error=str(e))
+
+    running_paths = {str(p) for _, p in _firefox_running_profiles()}
+    out = []
+    for name, path in all_profiles:
+        out.append({
+            "name": name,
+            "path": str(path),
+            "running": str(path) in running_paths,
+            "last_active": _firefox_profile_activity_mtime(path),
+        })
+    # Urut: running dulu (yang paling baru aktif di atas), lalu non-running by mtime
+    out.sort(key=lambda p: (not p["running"], -p["last_active"]))
+    return jsonify(profiles=out)
 
 
 @app.post("/api/upload/login-from-browser")

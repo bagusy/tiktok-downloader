@@ -23,7 +23,15 @@
       <span id="loginBadge" class="badge unknown">Mengecek...</span>
       <a href="/" class="ghost-btn" id="loginLink" style="text-decoration:none; padding:0.4rem 0.85rem; display:none;">Login di sini &rarr;</a>
     </div>
-    <p class="hint" style="margin: -0.5rem 0 1rem; font-size: 0.85rem;">
+
+    <div id="profilePickerRow" class="row hidden" style="margin: 0.5rem 0 0;">
+      <label for="profilePicker">
+        Firefox profile <span class="hint">(ada &gt;1 profile running &mdash; pilih akun yang mau dipakai)</span>:
+      </label>
+      <select id="profilePicker" style="flex: 1;"></select>
+    </div>
+
+    <p class="hint" style="margin: 0.5rem 0 1rem; font-size: 0.85rem;">
       Akun yang ditampilkan di badge = akun TikTok kamu yang sedang login (tujuan upload).
       Cookies di-ambil dari Firefox profile yang sedang aktif.
     </p>

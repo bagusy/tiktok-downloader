@@ -225,27 +225,69 @@ def _list_firefox_profiles() -> list[tuple[str, Path]]:
     return result
 
 
+def _firefox_profile_activity_mtime(profile_dir: Path) -> float:
+    """Heuristic 'kapan terakhir profile ini aktif': max mtime dari file yang
+    Firefox tulis selama browsing. cookies.sqlite-wal updates per cookie write,
+    recovery.jsonlz4 updates ~tiap 15 detik untuk session restore. Profile yang
+    benar-benar lagi dipakai user akan punya mtime paling baru.
+
+    Return 0.0 kalau semua file tidak ada / unreadable.
+    """
+    candidates = [
+        "cookies.sqlite-wal",
+        "cookies.sqlite",
+        "places.sqlite-wal",
+        "places.sqlite",
+        "recovery.jsonlz4",
+        "sessionstore.jsonlz4",
+    ]
+    best = 0.0
+    for fname in candidates:
+        f = profile_dir / fname
+        if not f.exists():
+            continue
+        try:
+            mt = f.stat().st_mtime
+            if mt > best:
+                best = mt
+        except OSError:
+            continue
+    return best
+
+
 def _firefox_running_profiles() -> list[tuple[str, Path]]:
-    """Profile Firefox yang sedang dipakai (ada parent.lock di dir-nya).
+    """Profile Firefox yang sedang dipakai (ada parent.lock di dir-nya), urut
+    dari yang paling baru aktif (heuristic via mtime cookies/places/session files).
 
     Firefox bikin file `parent.lock` di profile dir saat profile dibuka, hapus
     saat ditutup. Cara paling reliable untuk identify "profile mana yang lagi
-    dipakai user" tanpa parse process args.
+    dipakai user" tanpa parse process args. Kalau user buka >1 profile bareng,
+    sort by activity mtime supaya yang paling sering dipakai jadi default pick.
     """
-    return [(name, p) for name, p in _list_firefox_profiles()
-            if (p / "parent.lock").exists()]
+    running = [(name, p) for name, p in _list_firefox_profiles()
+               if (p / "parent.lock").exists()]
+    running.sort(key=lambda np: _firefox_profile_activity_mtime(np[1]), reverse=True)
+    return running
 
 
-def _browser_extraction_attempts(browser_name: str) -> list[tuple[str, str | None]]:
+def _browser_extraction_attempts(
+    browser_name: str, firefox_profile_override: str | None = None,
+) -> list[tuple[str, str | None]]:
     """Return list (label, profile_arg) untuk extract cookies dari browser ini.
 
-    Untuk Firefox: prioritas profile yang sedang running. Kalau ada running profile,
-    HANYA itu yang dicoba (jangan fallback ke default — user explicitly mau pakai
-    yang sekarang). Kalau tidak ada running profile, fallback ke default.
+    Untuk Firefox:
+    - `firefox_profile_override` (abs path) → HANYA pakai profile itu (user pilih
+      manual lewat UI).
+    - Tidak ada override → prioritas profile yang sedang running, urut by aktivitas
+      terbaru. Kalau tidak ada running, fallback ke default profile.
 
     Untuk browser lain: pakai default profile (None).
     """
     if browser_name == "firefox":
+        if firefox_profile_override:
+            override = Path(firefox_profile_override)
+            label = f"firefox:{override.name}"
+            return [(label, str(override))]
         running = _firefox_running_profiles()
         if running:
             return [(f"firefox:{name}", str(path)) for name, path in running]
@@ -297,8 +339,12 @@ def _extract_tt_cookies(browser_name: str,
     return pw_cookies, None
 
 
-def auto_login(on_status: StatusFn = _noop) -> tuple[bool, str | None, str | None]:
+def auto_login(on_status: StatusFn = _noop,
+               firefox_profile: str | None = None) -> tuple[bool, str | None, str | None]:
     """Auto-login pakai cookies dari browser yang sedang running.
+
+    `firefox_profile` opsional — kalau diisi (abs path ke Firefox profile dir),
+    skip auto-detect dan langsung pakai profile itu untuk Firefox.
 
     Flow:
     1. Deteksi browser running (Windows tasklist) — fallback "coba semua" kalau
@@ -312,6 +358,10 @@ def auto_login(on_status: StatusFn = _noop) -> tuple[bool, str | None, str | Non
     Return (ok, browser_used, error_msg).
     """
     detected = detect_running_browsers()
+    if firefox_profile and "firefox" not in detected:
+        # Override eksplisit → pastikan firefox masuk candidate walau tasklist
+        # tidak detect (mis. user pilih profile yang stale lock-nya tapi tidak running)
+        detected = ["firefox"] + [b for b in detected if b != "firefox"]
     if detected:
         on_status(f"Browser running terdeteksi: {', '.join(detected)}")
         candidates = detected
@@ -321,8 +371,12 @@ def auto_login(on_status: StatusFn = _noop) -> tuple[bool, str | None, str | Non
 
     extracted: list[tuple[str, list[dict]]] = []
     for br in candidates:
-        attempts = _browser_extraction_attempts(br)
-        if br == "firefox" and len(attempts) > 1:
+        attempts = _browser_extraction_attempts(
+            br, firefox_profile_override=firefox_profile if br == "firefox" else None
+        )
+        if br == "firefox" and firefox_profile:
+            on_status(f"  [{br}] pakai profile override: {attempts[0][0]}")
+        elif br == "firefox" and len(attempts) > 1:
             on_status(f"  [{br}] {len(attempts)} profile sedang running, akan dicoba semua")
         elif br == "firefox" and attempts[0][1]:
             on_status(f"  [{br}] running profile: {attempts[0][0]}")
