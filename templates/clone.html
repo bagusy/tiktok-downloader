@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TikTok Clone Account — Bulk Download + Auto Upload</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="container">
+    <header>
+      <h1>Clone Akun TikTok</h1>
+      <p class="sub">Paste URL profile target — semua video di-download lalu di-upload ke akun kamu satu per satu.</p>
+      <p class="nav-link">
+        <a href="/">&larr; Mode lengkap</a>
+        &nbsp;&middot;&nbsp;
+        <a href="/quick">Quick (1 video)</a>
+      </p>
+    </header>
+
+    <div class="upload-status-row">
+      <span>Status login (akun tujuan):</span>
+      <span id="loginBadge" class="badge unknown">Mengecek...</span>
+      <a href="/" class="ghost-btn" id="loginLink" style="text-decoration:none; padding:0.4rem 0.85rem; display:none;">Login di sini &rarr;</a>
+    </div>
+
+    <form id="cloneForm" class="url-form" style="flex-direction: column; align-items: stretch; gap: 0.75rem;" autocomplete="off">
+      <input
+        type="url"
+        id="cloneUrl"
+        name="url"
+        placeholder="URL profile TikTok: https://www.tiktok.com/@username"
+        required
+        spellcheck="false"
+      >
+      <div class="row" style="margin: 0;">
+        <label for="cloneMax">
+          Limit video (kosongkan untuk semua):
+        </label>
+        <input type="number" id="cloneMax" name="max_count" min="1" max="500" placeholder="contoh: 10"
+               style="width: 110px; padding: 0.5rem 0.75rem; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 8px;">
+      </div>
+      <div class="row" style="margin: 0;">
+        <label for="cloneBrowser">
+          Cookies dari browser <span class="hint">(opsional, bantu pass anti-bot)</span>:
+        </label>
+        <select id="cloneBrowser" name="browser">
+          <option value="">Auto (browser yang lagi running)</option>
+          <option value="chrome">Chrome</option>
+          <option value="edge">Edge</option>
+          <option value="firefox">Firefox</option>
+          <option value="brave">Brave</option>
+          <option value="opera">Opera</option>
+          <option value="vivaldi">Vivaldi</option>
+          <option value="chromium">Chromium</option>
+        </select>
+      </div>
+      <button type="submit" id="cloneBtn" style="padding: 0.95rem; font-size: 1rem;">
+        Mulai Clone
+      </button>
+    </form>
+
+    <p class="hint hint-warn" style="margin-top: 0.75rem;">
+      Tiap video: download HD ke <code>downloads/&lt;username&gt;/</code> &rarr; upload ke akun kamu &rarr; hapus file.
+      Caption dipakai dari description asli tiap video. Progress di-track di
+      <code>clone-state/&lt;username&gt;.json</code> &mdash; aman di-stop &amp; lanjut (tidak akan double-upload).
+    </p>
+
+    <div id="cloneProgress" class="bulk-progress hidden" style="margin-top: 1.5rem;">
+      <p class="progress-text" id="cloneProgressText">Mempersiapkan...</p>
+      <div class="counters" id="cloneCounters" style="margin: 0.5rem 0; font-size: 0.9rem; color: var(--muted);">
+        <span>Uploaded: <b id="cntUploaded">0</b></span>
+        &nbsp;&middot;&nbsp;
+        <span>Failed: <b id="cntFailed">0</b></span>
+        &nbsp;&middot;&nbsp;
+        <span>Skipped (sudah pernah): <b id="cntSkipped">0</b></span>
+        &nbsp;&middot;&nbsp;
+        <span>Total: <b id="cntTotal">?</b></span>
+      </div>
+      <ul id="cloneLog" class="bulk-log"></ul>
+    </div>
+  </main>
+
+  <script src="{{ url_for('static', filename='clone.js') }}"></script>
+</body>
+</html>

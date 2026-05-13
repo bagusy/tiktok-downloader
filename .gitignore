@@ -16,6 +16,9 @@ playwright-profile/
 # Screenshot diagnostic dari Playwright (mengandung konten akun TikTok)
 playwright-debug/
 
+# State resume untuk clone-account (uploaded video_id per username)
+clone-state/
+
 # IDE / editor
 .vscode/
 .idea/

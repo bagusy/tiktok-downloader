@@ -17,6 +17,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Iterable, Iterator
 
@@ -843,3 +844,44 @@ def upload_videos(
         yield {"event": "fatal", "error": f"Playwright error: {e}"}
     except Exception as e:
         yield {"event": "fatal", "error": f"Error tak terduga: {e}"}
+
+
+class _UploadSession:
+    """Wrapper supaya caller bisa panggil upload_one() pakai page yang sama."""
+
+    def __init__(self, page: Page) -> None:
+        self._page = page
+
+    def upload_one(self, video_path: Path, caption: str) -> Iterator[dict]:
+        """Generator yang yield status event untuk 1 video. Raise on failure."""
+        yield from _upload_in_page_iter(self._page, video_path, caption)
+
+
+@contextmanager
+def upload_session(headless: bool = False):
+    """Buka 1 Playwright session yang reusable untuk banyak upload.
+
+    Cocok untuk flow clone-account: caller loop video-nya sendiri (download per
+    video lalu upload) tanpa bikin context Playwright baru tiap kali.
+
+    Usage:
+        with upload_session(headless=False) as sess:
+            for video_path, caption in items:
+                for evt in sess.upload_one(video_path, caption):
+                    ...
+    """
+    with sync_playwright() as p:
+        ctx = _launch_context(p, headless=headless)
+        try:
+            page = ctx.new_page()
+            # Sanity warm-up: navigate ke home dulu supaya cookies / token state stabil.
+            try:
+                page.goto(HOME_URL, timeout=30_000, wait_until="domcontentloaded")
+            except PWTimeout:
+                pass
+            yield _UploadSession(page)
+        finally:
+            try:
+                ctx.close()
+            except Exception:
+                pass

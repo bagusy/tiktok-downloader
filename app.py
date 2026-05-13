@@ -11,6 +11,7 @@ import re
 import shutil
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yt_dlp
@@ -35,6 +36,7 @@ try:
         detect_running_browsers as tt_detect_running_browsers,
         login_from_browser as tt_login_from_browser,
         open_login_window as tt_open_login,
+        upload_session as tt_upload_session,
         upload_videos as tt_upload_videos,
     )
     UPLOAD_AVAILABLE = True
@@ -46,6 +48,7 @@ except Exception as _e:
 app = Flask(__name__)
 DOWNLOAD_DIR = Path(__file__).parent / "downloads"
 DOWNLOAD_DIR.mkdir(exist_ok=True)
+CLONE_STATE_DIR = Path(__file__).parent / "clone-state"
 
 
 @app.get("/")
@@ -56,6 +59,11 @@ def index():
 @app.get("/quick")
 def quick_page():
     return render_template("quick.html")
+
+
+@app.get("/clone")
+def clone_page():
+    return render_template("clone.html")
 
 
 @app.post("/api/info")
@@ -809,6 +817,287 @@ def api_quick_run():
                     "ok": False,
                     "file_kept": str(target_path.resolve()) if target_path else None,
                 })
+        except Exception as e:
+            yield _sse({"event": "fatal", "error": f"Error tak terduga: {e}"})
+
+    return Response(generate(), mimetype="text/event-stream",
+                    headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
+
+
+def _clone_state_path(username: str) -> Path:
+    return CLONE_STATE_DIR / f"{_safe_dirname(username)}.json"
+
+
+def _load_clone_state(username: str) -> dict:
+    """Load state file. Return {uploaded_ids: set[str], ...}. Missing file → empty state."""
+    p = _clone_state_path(username)
+    if not p.exists():
+        return {"username": username, "uploaded_ids": set(), "stats": {}, "last_run": None}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return {
+            "username": data.get("username", username),
+            "uploaded_ids": set(data.get("uploaded_ids") or []),
+            "stats": data.get("stats") or {},
+            "last_run": data.get("last_run"),
+        }
+    except (OSError, json.JSONDecodeError):
+        # Corrupt state → start fresh, jangan crash run
+        return {"username": username, "uploaded_ids": set(), "stats": {}, "last_run": None}
+
+
+def _save_clone_state(state: dict) -> None:
+    """Atomic write: tmp file + rename. Set serialize ke sorted list."""
+    CLONE_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    p = _clone_state_path(state["username"])
+    payload = {
+        "username": state["username"],
+        "uploaded_ids": sorted(state["uploaded_ids"]),
+        "stats": state.get("stats") or {},
+        "last_run": state.get("last_run"),
+    }
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(p)
+
+
+def _download_one_for_clone(video_url: str, user_dir: Path, username: str,
+                            video_id: str, title_hint: str, cookies_browser):
+    """Download 1 video ke user_dir. Coba savetik HD dulu, fallback yt-dlp 720p.
+
+    Return (path, tier, info_dict) on success; raise RuntimeError on failure.
+    info_dict berisi {description, title, uploader} dari yt-dlp (untuk caption).
+    """
+    user_dir.mkdir(parents=True, exist_ok=True)
+    hd_filename = _make_bulk_filename(username, title_hint, video_id)
+    hd_path = _unique_path(user_dir / hd_filename)
+
+    # Step A: savetik HD (best effort)
+    try:
+        sav = fetch_savetik_hd(video_url, timeout=15)
+    except Exception:
+        sav = None
+
+    if sav and sav.get("hd_url"):
+        if download_savetik_to_file(sav["hd_url"], hd_path, timeout=180):
+            return hd_path, "1080p HD"
+
+    # Step B: fallback yt-dlp 720p — kita pakai info-nya untuk caption juga
+    try:
+        info = fetch_info(video_url, cookies_browser=cookies_browser)
+    except yt_dlp.utils.DownloadError as e:
+        raise RuntimeError(f"yt-dlp fetch_info gagal: {e}")
+
+    no_wm, with_wm, audios = categorize_formats(info)
+    options = build_options(no_wm, with_wm, audios)
+    target = next((o for o in options if "No-Watermark" in o[2]), None)
+    if not target:
+        target = next((o for o in options if o[0] == "video"), None)
+    if not target:
+        raise RuntimeError("tidak ada format video yang bisa di-download")
+
+    kind, fmt_id, _label = target
+    job_dir = user_dir / f".tmp-{uuid.uuid4().hex[:8]}"
+    try:
+        do_download(video_url, kind, fmt_id, job_dir, cookies_browser=cookies_browser)
+        files = [p for p in job_dir.iterdir() if p.is_file()] if job_dir.exists() else []
+        if not files:
+            raise RuntimeError("file hasil download tidak ditemukan")
+        src = files[0]
+        final = _unique_path(user_dir / src.name)
+        src.rename(final)
+        return final, "720p (fallback)"
+    finally:
+        shutil.rmtree(job_dir, ignore_errors=True)
+
+
+@app.post("/api/clone/run")
+def api_clone_run():
+    """Clone akun TikTok: bulk-download dari profile + auto-upload ke akun user.
+
+    Body: {"url": "<profile_url>", "browser": "<optional cookie source>", "max_count": <int|null>}
+    SSE stream. Per video: skip-if-uploaded → download HD → upload → hapus file → mark uploaded.
+    """
+    if not UPLOAD_AVAILABLE:
+        return jsonify(error=f"Playwright belum terinstall: {UPLOAD_IMPORT_ERROR}"), 500
+
+    data = request.get_json(silent=True) or {}
+    profile_url = (data.get("url") or "").strip()
+    browser_hint = (data.get("browser") or "").strip() or None
+    max_count = data.get("max_count")
+    try:
+        max_count = int(max_count) if max_count not in (None, "", 0) else None
+    except (TypeError, ValueError):
+        max_count = None
+
+    if not profile_url:
+        return jsonify(error="URL kosong"), 400
+    if detect_url_type(profile_url) != "profile":
+        return jsonify(error="URL bukan URL profil TikTok"), 400
+
+    @stream_with_context
+    def generate():
+        try:
+            # Step 0: cek login Playwright (target akun upload-an user)
+            yield _sse({"event": "status", "msg": "Cek login TikTok (akun upload tujuan)..."})
+            try:
+                logged_in = tt_check_login()
+            except Exception as e:
+                yield _sse({"event": "fatal", "error": f"Cek login gagal: {e}"})
+                return
+            if not logged_in:
+                yield _sse({
+                    "event": "fatal",
+                    "error": "Belum login TikTok. Buka halaman utama (/) untuk import login dari browser.",
+                })
+                return
+
+            # Step 1: deteksi cookies browser untuk yt-dlp (fetch_info & fallback download)
+            cookies_browser = browser_hint
+            if not cookies_browser:
+                try:
+                    running = tt_detect_running_browsers()
+                    cookies_browser = running[0] if running else None
+                except Exception:
+                    cookies_browser = None
+            cookie_hint = f" (cookies: {cookies_browser})" if cookies_browser else ""
+
+            # Step 2: ambil daftar video dari profile
+            yield _sse({"event": "status",
+                        "msg": f"Mengambil daftar video dari profil{cookie_hint}..."})
+            try:
+                profile = fetch_profile_videos(profile_url, cookies_browser=cookies_browser,
+                                               max_count=max_count)
+            except yt_dlp.utils.DownloadError as e:
+                yield _sse({"event": "fatal", "error": f"Gagal ambil profile: {e}",
+                            "needs_login": _needs_cookies_retry(e)})
+                return
+            except Exception as e:
+                yield _sse({"event": "fatal", "error": f"Error tak terduga: {e}"})
+                return
+
+            videos = profile["videos"]
+            username = profile["username"] or "unknown"
+            total = len(videos)
+
+            user_dir = DOWNLOAD_DIR / _safe_dirname(username)
+            user_dir.mkdir(parents=True, exist_ok=True)
+
+            # Step 3: load state — skip video_id yang sudah di-upload
+            state = _load_clone_state(username)
+            already = state["uploaded_ids"]
+            pending = [v for v in videos if v.get("id") and v["id"] not in already]
+            skipped_already = total - len(pending)
+
+            yield _sse({
+                "event": "start",
+                "username": username,
+                "total": total,
+                "pending": len(pending),
+                "skipped_already": skipped_already,
+                "save_dir": str(user_dir),
+            })
+
+            if not pending:
+                yield _sse({"event": "done", "uploaded": 0, "failed": 0, "skipped": skipped_already,
+                            "username": username})
+                return
+
+            uploaded = 0
+            failed = 0
+
+            # Step 4: open Playwright session reusable, loop tiap video pending
+            try:
+                with tt_upload_session(headless=False) as sess:
+                    for i, v in enumerate(pending, start=1):
+                        video_url = v["url"]
+                        video_id = v.get("id") or ""
+                        title_hint = v.get("title") or ""
+
+                        yield _sse({
+                            "event": "progress",
+                            "current": i,
+                            "total": len(pending),
+                            "video_id": video_id,
+                            "url": video_url,
+                        })
+
+                        # 4a: download
+                        downloaded_path: Path | None = None
+                        try:
+                            yield _sse({"event": "status",
+                                        "msg": f"[{i}/{len(pending)}] Download {video_id}..."})
+                            downloaded_path, tier = _download_one_for_clone(
+                                video_url, user_dir, username, video_id, title_hint, cookies_browser
+                            )
+                            yield _sse({"event": "downloaded", "video_id": video_id,
+                                        "filename": downloaded_path.name, "tier": tier})
+                        except Exception as e:
+                            failed += 1
+                            yield _sse({"event": "error", "video_id": video_id,
+                                        "phase": "download", "reason": str(e)[:300]})
+                            continue
+
+                        # 4b: ambil caption asli (description full). Kalau gagal, pakai title.
+                        caption = title_hint
+                        try:
+                            info = fetch_info(video_url, cookies_browser=cookies_browser)
+                            caption = (info.get("description") or info.get("title")
+                                       or title_hint or "")
+                        except Exception:
+                            pass
+
+                        # 4c: upload via session yang sama
+                        upload_ok = False
+                        try:
+                            yield _sse({"event": "status",
+                                        "msg": f"[{i}/{len(pending)}] Upload {downloaded_path.name}..."})
+                            for evt in sess.upload_one(downloaded_path, caption):
+                                yield _sse(evt)
+                            upload_ok = True
+                        except Exception as e:
+                            yield _sse({"event": "error", "video_id": video_id,
+                                        "phase": "upload", "reason": str(e)[:300]})
+
+                        # 4d: cleanup + state persist
+                        if upload_ok:
+                            uploaded += 1
+                            try:
+                                downloaded_path.unlink()
+                                deleted = True
+                            except Exception:
+                                deleted = False
+                            state["uploaded_ids"].add(video_id)
+                            state["last_run"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                            state["stats"]["total_uploaded"] = (
+                                state["stats"].get("total_uploaded", 0) + 1
+                            )
+                            try:
+                                _save_clone_state(state)
+                            except Exception as e:
+                                yield _sse({"event": "status",
+                                            "msg": f"Warning: gagal simpan state: {e}"})
+                            yield _sse({"event": "ok", "video_id": video_id,
+                                        "filename": downloaded_path.name, "deleted": deleted})
+                        else:
+                            failed += 1
+                            # File tetap di disk supaya user bisa retry manual
+
+                        # 4e: jeda antar video supaya tidak rate-limit
+                        if i < len(pending):
+                            time.sleep(4)
+
+            except Exception as e:
+                yield _sse({"event": "fatal", "error": f"Session error: {e}"})
+                return
+
+            yield _sse({
+                "event": "done",
+                "uploaded": uploaded,
+                "failed": failed,
+                "skipped": skipped_already,
+                "username": username,
+            })
         except Exception as e:
             yield _sse({"event": "fatal", "error": f"Error tak terduga: {e}"})
 
